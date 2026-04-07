@@ -1,0 +1,24 @@
+# Виртуальное окружение Python
+.venv/
+venv/
+backend/venv/
+
+# Зависимости Node.js (скачиваются через npm install)
+frontend/node_modules/
+
+# Кэш Python
+__pycache__/
+*.pyc
+
+# Локальная база данных SQLite
+*.db
+
+# Системные файлы
+.DS_Store
+Thumbs.db
+
+# Логи
+*.log
+
+# IDE настройки (опционально, можно убрать если хотите хранить)
+# .vscode/
