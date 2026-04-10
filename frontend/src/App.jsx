@@ -16,6 +16,8 @@ function App() {
   const [wireframe, setWireframe] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [tileImage, setTileImage] = useState(null);
+  const [tileCoverage, setTileCoverage] = useState(null);
 
   // Стейт менеджера слоев
   const [layers, setLayers] = useState({
@@ -25,8 +27,8 @@ function App() {
     earthquakes: true
   });
 
-  // Функция для отправки файла на бэкенд
-  const handleFileUpload = async (file) => {
+  // Единая логика для отправки метеоданных и получения автоматической загрузки рельефа
+  const handleSimulationUpload = async (file) => {
     setLoading(true);
     setError(null);
     
@@ -34,71 +36,48 @@ function App() {
     formData.append("file", file);
 
     try {
-      // Отправляем файл на API нашего FastAPI сервера
-      const response = await fetch("http://localhost:8000/api/v1/terrain/process-heightmap", {
+      // Отправляем JSON-файл погоды на единую точку входа
+      const response = await fetch("http://localhost:8000/api/v1/simulation/process", {
         method: "POST",
         body: formData,
       });
 
       if (!response.ok) {
         const errorData = await response.json();
-        throw new Error(errorData.detail || 'Ошибка при обработке изображения на сервере');
+        throw new Error(JSON.stringify(errorData.detail) || 'Ошибка при загрузке данных симуляции');
       }
 
+      // Структура ответа: { terrain: { matrix, size, ... }, weather: { ... } }
       const data = await response.json();
-      // Сохраняем полученный массив высот и разрешение в стейт
-      setHeightData(data.heights);
-      setResolution(data.resolution);
+      
+      // Обновляем геометрию
+      setHeightData(data.terrain.matrix);
+      setResolution([data.terrain.size, data.terrain.size]);
+      setTileImage(data.terrain.image_base64);
+      setTileCoverage(data.terrain.tile_width_km);
+      
+      // Обновляем погоду
+      setWeatherData(data.weather);
+      
+      // В MVP мы временно не прокидываем file_id с нового эндпоинта (или можно сделать это позже)
+      // setShowReportModal(true);
       
     } catch (err) {
       console.error(err);
-      setError(err.message);
-      alert(`Ошибка: ${err.message}`); // Показываем простое уведомление (можно заменить на Toast)
+      setError(`Ошибка симуляции: ${err.message}`);
+      alert(`Ошибка: ${err.message}`); // Показываем простое уведомление
     } finally {
       setLoading(false);
     }
   };
 
-  // Функция для отправки JSON-файла с погодой
-  const handleWeatherUpload = async (file) => {
-    setLoading(true);
-    setError(null);
-    
-    const formData = new FormData();
-    formData.append("file", file);
 
-    try {
-      const response = await fetch("http://localhost:8000/api/v1/weather/upload", {
-        method: "POST",
-        body: formData,
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(JSON.stringify(errorData.detail) || 'Ошибка при валидации JSON');
-      }
-
-      // Сохраняем успешно провалидированные данные
-      const { file_id, data } = await response.json();
-      setWeatherData(data);
-      if (file_id !== -1) {
-        setCurrentFileId(file_id);
-        setShowReportModal(true);
-      }
-    } catch (err) {
-      console.error(err);
-      setError(`Ошибка данных: ${err.message}`);
-    } finally {
-      setLoading(false);
-    }
-  };
 
   return (
     <div className="flex h-screen w-full bg-slate-900 text-white overflow-hidden">
       {/* Боковая панель для управления параметрами (UI) */}
       <Sidebar 
-        onUpload={handleFileUpload}
-        onWeatherUpload={handleWeatherUpload}
+        onUpload={handleSimulationUpload}
         zScale={zScale} 
         setZScale={setZScale}
         wireframe={wireframe}
@@ -106,6 +85,8 @@ function App() {
         loading={loading}
         layers={layers}
         setLayers={setLayers}
+        tileImage={tileImage}
+        tileCoverage={tileCoverage}
       />
 
       {/* Основной контейнер для 3D сцены */}

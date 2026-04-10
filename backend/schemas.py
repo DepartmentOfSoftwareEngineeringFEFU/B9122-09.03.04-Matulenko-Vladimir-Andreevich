@@ -16,7 +16,13 @@ class WindSchema(BaseModel):
     speed_ms: float = Field(..., ge=0, le=33, description="Скорость ветра м/с до ураганных значений")
     azimuth_deg: float = Field(..., ge=0, le=360, description="Направление в градусах откуда дует ветер")
 
+class MetadataSchema(BaseModel):
+    center_lat: float = Field(..., description="Широта центра симуляции")
+    center_lon: float = Field(..., description="Долгота центра симуляции")
+    zoom: int = Field(11, description="Зум карты (по умолчанию 11)")
+
 class WeatherDataSchema(BaseModel):
+    metadata: MetadataSchema = Field(..., description="Метаданные для привязки симуляции (координаты, зум)")
     earthquakes: List[EarthquakeSchema] = []
     fog: Optional[FogSchema] = None
     wind: Optional[WindSchema] = None

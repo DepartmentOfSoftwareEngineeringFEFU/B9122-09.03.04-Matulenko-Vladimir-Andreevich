@@ -1,0 +1,29 @@
+{
+  "metadata": {
+    "center_lat": 43.1155,
+    "center_lon": 131.8855,
+    "zoom": 11
+  },
+  "earthquakes": [
+    {
+      "magnitude": 6.1,
+      "depth_km": 15.0,
+      "lat": 43.1500,
+      "lon": 131.9000
+    },
+    {
+      "magnitude": 4.5,
+      "depth_km": 8.0,
+      "lat": 43.0800,
+      "lon": 131.8500
+    }
+  ],
+  "fog": {
+    "density_percent": 90.0,
+    "layer_thickness_km": 2.5
+  },
+  "wind": {
+    "speed_ms": 18.5,
+    "azimuth_deg": 220.0
+  }
+}

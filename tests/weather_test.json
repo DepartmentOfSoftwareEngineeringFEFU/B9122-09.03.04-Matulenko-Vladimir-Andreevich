@@ -1,4 +1,9 @@
 {
+  "metadata": {
+    "center_lat": 41.0,
+    "center_lon": 31.0,
+    "zoom": 11
+  },
   "earthquakes": [
     {
       "magnitude": 5.5,

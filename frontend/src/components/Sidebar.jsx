@@ -1,17 +1,10 @@
 import React from 'react';
-const Sidebar = ({ onUpload, onWeatherUpload, zScale, setZScale, wireframe, setWireframe, loading, layers, setLayers }) => {
+const Sidebar = ({ onUpload, zScale, setZScale, wireframe, setWireframe, loading, layers, setLayers, tileImage, tileCoverage }) => {
   
   const handleFileChange = (e) => {
     const file = e.target.files[0];
-    if (file) {
+    if (file && onUpload) {
       onUpload(file);
-    }
-  };
-
-  const handleWeatherFileChange = (e) => {
-    const file = e.target.files[0];
-    if (file && onWeatherUpload) {
-      onWeatherUpload(file);
     }
   };
 
@@ -19,23 +12,7 @@ const Sidebar = ({ onUpload, onWeatherUpload, zScale, setZScale, wireframe, setW
     <div className="w-80 bg-slate-800 p-6 flex flex-col gap-6 shadow-2xl z-10">
       <h1 className="text-2xl font-bold text-blue-400 border-b border-slate-700 pb-2">3D Terrain MVP</h1>
       
-      {/* Секция загрузки файла */}
-      <div className="flex flex-col gap-2">
-        <label className="text-sm font-semibold text-slate-300">Карта высот (Image)</label>
-        <input 
-          type="file" 
-          accept="image/png, image/jpeg" 
-          onChange={handleFileChange}
-          disabled={loading}
-          className="block w-full text-sm text-slate-400
-            file:mr-4 file:py-2 file:px-4
-            file:rounded file:border-0
-            file:text-sm file:font-semibold
-            file:bg-blue-600 file:text-white
-            hover:file:bg-blue-700 transition-colors
-            cursor-pointer"
-        />
-      </div>
+
 
       {/* Секция загрузки JSON данных о погоде */}
       <div className="flex flex-col gap-2">
@@ -43,7 +20,7 @@ const Sidebar = ({ onUpload, onWeatherUpload, zScale, setZScale, wireframe, setW
         <input 
           type="file" 
           accept="application/json" 
-          onChange={handleWeatherFileChange}
+          onChange={handleFileChange}
           disabled={loading}
           className="block w-full text-sm text-slate-400
             file:mr-4 file:py-2 file:px-4
@@ -126,6 +103,23 @@ const Sidebar = ({ onUpload, onWeatherUpload, zScale, setZScale, wireframe, setW
           /> Землетрясения
         </label>
       </div>
+
+      {/* Превью тайла из AWS */}
+      {tileImage && (
+        <div className="flex flex-col gap-2 mt-4 opacity-80 hover:opacity-100 transition-opacity">
+          <label className="text-xs font-semibold text-slate-400 uppercase tracking-widest border-b border-slate-700 pb-1">Тайл AWS (Raw)</label>
+          <img 
+            src={`data:image/png;base64,${tileImage}`} 
+            alt="Terrain Tile" 
+            className="w-full h-auto rounded border-2 border-slate-700 shadow-md"
+          />
+          {tileCoverage && (
+            <p className="text-xs text-blue-400 mt-1">
+              Охват: ~{tileCoverage} x {tileCoverage} км
+            </p>
+          )}
+        </div>
+      )}
 
       <div className="mt-auto text-xs text-slate-500 bg-slate-900/50 p-4 rounded-md">
         <p className="font-semibold text-slate-400 mb-1">MVP Этап 3</p>

@@ -13,6 +13,7 @@ from database import engine, Base, get_db
 from models import MeteorologicalDataLog, TerrainMap
 from schemas import WeatherDataSchema, WeatherReportResponse, TerrainMapResponse, UploadWeatherResponse
 from typing import List
+from terrain_service import TerrainService
 
 app = FastAPI(title="Terrain Generator API (MVP)")
 
@@ -31,7 +32,7 @@ async def startup():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
-@app.post("/api/v1/terrain/process-heightmap")
+@app.post("/api/v1/terrain/process-heightmap", deprecated=True)
 async def process_heightmap(file: UploadFile = File(...), db: AsyncSession = Depends(get_db)):
     # Проверка, что загружен именно графический файл
     if not file.content_type.startswith("image/"):
@@ -90,7 +91,7 @@ async def process_heightmap(file: UploadFile = File(...), db: AsyncSession = Dep
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing image: {str(e)}")
 
-@app.post("/api/v1/weather/upload", response_model=UploadWeatherResponse)
+@app.post("/api/v1/weather/upload", response_model=UploadWeatherResponse, deprecated=True)
 async def upload_weather_data(file: UploadFile = File(...), db: AsyncSession = Depends(get_db)):
     if not file.filename.endswith(".json"):
         raise HTTPException(status_code=400, detail="Только JSON файлы разрешены")
@@ -166,3 +167,64 @@ async def get_terrain_maps(db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(TerrainMap).order_by(TerrainMap.upload_time.desc()))
     maps = result.scalars().all()
     return maps
+
+@app.post("/api/v1/simulation/process")
+async def process_simulation(file: UploadFile = File(...), db: AsyncSession = Depends(get_db)):
+    if not file.filename.endswith(".json"):
+        raise HTTPException(status_code=400, detail="Только JSON файлы разрешены")
+    
+    content = await file.read()
+    try:
+        data_dict = json.loads(content)
+        validated_data = WeatherDataSchema(**data_dict)
+    except ValidationError as e:
+        raise HTTPException(status_code=422, detail=f"Ошибка валидации схемы: {e.errors()}")
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Неверный формат JSON")
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    # Вызов TerrainService для получения карты высот
+    terrain_data = await TerrainService.get_elevation_matrix(
+        lat=validated_data.metadata.center_lat,
+        lon=validated_data.metadata.center_lon,
+        zoom=validated_data.metadata.zoom
+    )
+
+    try:
+        # Логируем загрузку в базу для отчетов (требование MET_004)
+        eq_count = len(validated_data.earthquakes)
+        fog_count = 1 if validated_data.fog else 0
+        wind_count = 1 if validated_data.wind else 0
+        total_records = eq_count + fog_count + wind_count
+
+        min_lat, max_lat, min_lon, max_lon = None, None, None, None
+        if eq_count > 0:
+            lats = [eq.lat for eq in validated_data.earthquakes]
+            lons = [eq.lon for eq in validated_data.earthquakes]
+            min_lat, max_lat = min(lats), max(lats)
+            min_lon, max_lon = min(lons), max(lons)
+
+        new_log = MeteorologicalDataLog(
+            filename=file.filename,
+            status="Processed Successfully (Simulation API)",
+            total_records=total_records,
+            earthquakes_count=eq_count,
+            fog_count=fog_count,
+            wind_count=wind_count,
+            min_lat=min_lat,
+            max_lat=max_lat,
+            min_lon=min_lon,
+            max_lon=max_lon
+        )
+        db.add(new_log)
+        await db.commit()
+    except Exception as e:
+        await db.rollback()
+        print(f"Database error: {e}")
+
+    # Формируем итоговый JSON-ответ
+    return {
+        "terrain": terrain_data,
+        "weather": validated_data.dict()
+    }
