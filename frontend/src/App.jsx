@@ -18,6 +18,7 @@ function App() {
   const [error, setError] = useState(null);
   const [tileImage, setTileImage] = useState(null);
   const [tileCoverage, setTileCoverage] = useState(null);
+  const [terrainMeta, setTerrainMeta] = useState(null);
 
   // Стейт менеджера слоев
   const [layers, setLayers] = useState({
@@ -55,6 +56,10 @@ function App() {
       setResolution([data.terrain.size, data.terrain.size]);
       setTileImage(data.terrain.image_base64);
       setTileCoverage(data.terrain.tile_width_km);
+      setTerrainMeta({
+        minMeters: data.terrain.min_height_meters,
+        maxMeters: data.terrain.max_height_meters,
+      });
       
       // Обновляем погоду
       setWeatherData(data.weather);
@@ -107,6 +112,7 @@ function App() {
               resolution={resolution} 
               zScale={zScale} 
               wireframe={wireframe}
+              terrainMeta={terrainMeta}
             />
           )}
           

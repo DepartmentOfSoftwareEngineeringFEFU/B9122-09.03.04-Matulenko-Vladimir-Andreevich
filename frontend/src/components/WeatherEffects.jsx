@@ -1,7 +1,8 @@
-import React, { useRef, useMemo, useEffect } from 'react';
+import React, { useRef, useEffect } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import { mapGeoToLocal } from '../utils/geo';
+import WindSystem from './WindSystem';
 
 // Фейковые границы геометрии (в реальном проекте они должны приходить с бэкенда Terrain API)
 const MAP_BOUNDS = { minLat: 40, maxLat: 42, minLon: 30, maxLon: 32 };
@@ -9,7 +10,6 @@ const TERRAIN_SIZE = 200; // Должно совпадать с args={[200, 200,
 
 const WeatherEffects = ({ weatherData, layers, heightData, resolution, zScale }) => {
   const { scene } = useThree();
-  const windParticlesRef = useRef();
 
   // Функция для получения точной Y-высоты рельефа в координатах X, Z
   const getTerrainHeight = (localX, localZ) => {
@@ -50,66 +50,18 @@ const WeatherEffects = ({ weatherData, layers, heightData, resolution, zScale })
     return () => { scene.fog = null; };
   }, [weatherData?.fog, scene, layers.fog]);
 
-  // 2. ВЕТЕР
-  // Создаем массив частиц один раз с помощью useMemo
-  const particleCount = 2000;
-  const particlesPosition = useMemo(() => {
-    const pos = new Float32Array(particleCount * 3);
-    for (let i = 0; i < particleCount; i++) {
-      // Раскидываем частицы в пространстве: X (-100 до 100), Y (0 до 50), Z (-100 до 100)
-      pos[i * 3] = (Math.random() - 0.5) * 200;
-      pos[i * 3 + 1] = Math.random() * 50;
-      pos[i * 3 + 2] = (Math.random() - 0.5) * 200;
-    }
-    return pos;
-  }, []);
-
-  useFrame((state, delta) => {
-    if (weatherData?.wind && windParticlesRef.current && layers.wind) {
-      const positions = windParticlesRef.current.geometry.attributes.position.array;
-      const { speed_ms, azimuth_deg } = weatherData.wind;
-      
-      const angleRad = (azimuth_deg * Math.PI) / 180;
-      const dirX = Math.sin(angleRad);
-      const dirZ = Math.cos(angleRad);
-      
-      for (let i = 0; i < particleCount; i++) {
-        const i3 = i * 3;
-        
-        positions[i3] += dirX * speed_ms * delta;
-        positions[i3 + 2] += dirZ * speed_ms * delta;
-        
-        if (positions[i3] > 100) positions[i3] = -100;
-        if (positions[i3] < -100) positions[i3] = 100;
-        if (positions[i3 + 2] > 100) positions[i3 + 2] = -100;
-        if (positions[i3 + 2] < -100) positions[i3 + 2] = 100;
-        
-        // Добавляем микроволны рельефа к Y частице для эффекта обтекания
-        // В MVP мы просто оставляем частицы на случайной Y
-      }
-      windParticlesRef.current.geometry.attributes.position.needsUpdate = true;
-    }
-  });
-
   return (
     <>
-      {/* Рендер частиц ветра */}
-      {weatherData?.wind && layers.wind && (
-        <points ref={windParticlesRef}>
-          <bufferGeometry>
-            <bufferAttribute
-              attach="attributes-position"
-              count={particleCount}
-              array={particlesPosition}
-              itemSize={3}
-            />
-          </bufferGeometry>
-          {/* Частицы прозрачные и белые */}
-          <pointsMaterial color={0xffffff} size={1.5} transparent opacity={0.6} />
-        </points>
-      )}
+      {/* 2. ВЕТЕР — Физически-достоверная система частиц с привязкой к рельефу */}
+      <WindSystem
+        windData={weatherData?.wind}
+        terrainMatrix={heightData}
+        terrainSize={resolution?.[0] ?? 256}
+        zScale={zScale}
+        visible={layers.wind}
+      />
 
-      {/* Рендер землетрясений (только если слой включен) */}
+      {/* 3. Рендер землетрясений (только если слой включен) */}
       {layers.earthquakes && weatherData?.earthquakes?.map((eq, idx) => {
         // Проекция Geo в Local
         const { x, z } = mapGeoToLocal(
