@@ -16,6 +16,14 @@ class WindSchema(BaseModel):
     speed_ms: float = Field(..., ge=0, le=33, description="Скорость ветра м/с до ураганных значений")
     azimuth_deg: float = Field(..., ge=0, le=360, description="Направление в градусах откуда дует ветер")
 
+class WindStationSchema(BaseModel):
+    name: Optional[str] = Field(None, description="Название метеостанции")
+    lat: float = Field(..., ge=-90, le=90, description="Широта метеостанции")
+    lon: float = Field(..., ge=-180, le=180, description="Долгота метеостанции")
+    azimuth_deg: float = Field(..., ge=0, le=360, description="Направление ветра в градусах")
+    speed_ms: float = Field(..., ge=0, le=33, description="Скорость ветра м/с")
+    color: Optional[str] = Field(None, description="HEX-цвет для визуализации на фронтенде")
+
 class MetadataSchema(BaseModel):
     center_lat: float = Field(..., description="Широта центра симуляции")
     center_lon: float = Field(..., description="Долгота центра симуляции")
@@ -26,6 +34,7 @@ class WeatherDataSchema(BaseModel):
     earthquakes: List[EarthquakeSchema] = []
     fog: Optional[FogSchema] = None
     wind: Optional[WindSchema] = None
+    wind_stations: Optional[List[WindStationSchema]] = None
 
 # Схема для ответа с отчетом (MET_004)
 class WeatherReportResponse(BaseModel):

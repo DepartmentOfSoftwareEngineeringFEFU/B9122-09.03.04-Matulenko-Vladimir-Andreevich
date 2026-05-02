@@ -1,15 +1,60 @@
-import React, { useRef, useEffect } from 'react';
+import React, { useRef, useEffect, useState } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import { mapGeoToLocal } from '../utils/geo';
 import WindSystem from './WindSystem';
 
-// Фейковые границы геометрии (в реальном проекте они должны приходить с бэкенда Terrain API)
-const MAP_BOUNDS = { minLat: 40, maxLat: 42, minLon: 30, maxLon: 32 };
+// Фоллбэк-границы (используются если бэкенд не вернул tile_bounds)
+const DEFAULT_BOUNDS = { minLat: 40, maxLat: 42, minLon: 30, maxLon: 32 };
 const TERRAIN_SIZE = 200; // Должно совпадать с args={[200, 200, ...]} в Terrain.jsx
 
-const WeatherEffects = ({ weatherData, layers, heightData, resolution, zScale }) => {
+// Координаты по умолчанию для запроса live-данных (Владивосток)
+const DEFAULT_LIVE_LAT = 43.05;
+const DEFAULT_LIVE_LON = 131.89;
+
+const WeatherEffects = ({ weatherData, layers, heightData, resolution, zScale, tileBounds }) => {
   const { scene } = useThree();
+
+  // Используем реальные границы тайла (из API) или фоллбэк
+  const mapBounds = tileBounds || DEFAULT_BOUNDS;
+
+  // ================================================================
+  // LIVE WEATHER: состояние для данных реального ветра с Open-Meteo
+  // ================================================================
+  const [liveWindStations, setLiveWindStations] = useState(null);
+  const [isLiveLoading, setIsLiveLoading] = useState(false);
+  const [liveError, setLiveError] = useState(null);
+
+  /**
+   * fetchLiveWeather — Запрос реальных данных ветра с нашего бэкенда.
+   * Бэкенд проксирует запрос к Open-Meteo API, генерируя 4 виртуальные
+   * метеостанции (Bounding Box) вокруг заданной точки.
+   */
+  const fetchLiveWeather = async (lat, lon) => {
+    setIsLiveLoading(true);
+    setLiveError(null);
+    try {
+      const response = await fetch(
+        `http://localhost:8000/api/weather/live?lat=${lat}&lon=${lon}`
+      );
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.detail || `HTTP ${response.status}`);
+      }
+      const data = await response.json();
+      setLiveWindStations(data.wind_stations);
+    } catch (err) {
+      console.error('[WeatherEffects] Ошибка загрузки live-данных:', err.message);
+      setLiveError(err.message);
+    } finally {
+      setIsLiveLoading(false);
+    }
+  };
+
+  // Запрос live-данных при монтировании (координаты по умолчанию)
+  useEffect(() => {
+    fetchLiveWeather(DEFAULT_LIVE_LAT, DEFAULT_LIVE_LON);
+  }, []);
 
   // Функция для получения точной Y-высоты рельефа в координатах X, Z
   const getTerrainHeight = (localX, localZ) => {
@@ -20,8 +65,6 @@ const WeatherEffects = ({ weatherData, layers, heightData, resolution, zScale })
     
     // Переводим от -100..100 к индексам массива 0..255
     const percentX = (localX + halfSize) / TERRAIN_SIZE;
-    // Z ось от -100 (север, верх массива) до +100 (юг, низ массива). 
-    // Поскольку индекс 0 - это начало массива, localZ=-halfSize должно давать 0.
     const percentZ = (localZ + halfSize) / TERRAIN_SIZE; 
     
     let ix = Math.floor(percentX * (width - 1));
@@ -36,38 +79,45 @@ const WeatherEffects = ({ weatherData, layers, heightData, resolution, zScale })
   };
 
   // 1. ТУМАН
-  // Применяем туман на всю сцену Three.js при наличии данных и активном слое слоя
   useEffect(() => {
     if (weatherData?.fog && layers.fog) {
-      // Снижен множитель до 0.015, чтобы рельеф был виден даже при 100% плотности
-      // Изменен цвет тумана на атмосферный синевато-серый (сланец), чтобы не "слепить" белым светом
       const density = (weatherData.fog.density_percent / 100) * 0.015;
       scene.fog = new THREE.FogExp2(0x64748b, density);
     } else {
       scene.fog = null;
     }
-    // Очистка при размонтировании
     return () => { scene.fog = null; };
   }, [weatherData?.fog, scene, layers.fog]);
 
+  // Определяем источник данных ветра:
+  // Приоритет: 1) wind_stations из загруженного JSON файла
+  //            2) live-данные с Open-Meteo (фоновый запрос)
+  //            3) legacy формат wind (одиночный вектор)
+  const activeWindStations = weatherData?.wind_stations || liveWindStations;
+  const activeLegacyWind = weatherData?.wind_stations ? null : (weatherData?.wind || null);
+
   return (
     <>
-      {/* 2. ВЕТЕР — Физически-достоверная система частиц с привязкой к рельефу */}
-      <WindSystem
-        windData={weatherData?.wind}
-        terrainMatrix={heightData}
-        terrainSize={resolution?.[0] ?? 256}
-        zScale={zScale}
-        visible={layers.wind}
-      />
+      {/* 2. ВЕТЕР — IDW интерполяция от нескольких метеостанций */}
+      {!isLiveLoading && (
+        <WindSystem
+          windStations={activeWindStations}
+          windDataLegacy={activeLegacyWind}
+          terrainMatrix={heightData}
+          terrainSize={resolution?.[0] ?? 256}
+          zScale={zScale}
+          visible={layers.wind}
+          mapBounds={mapBounds}
+        />
+      )}
 
       {/* 3. Рендер землетрясений (только если слой включен) */}
       {layers.earthquakes && weatherData?.earthquakes?.map((eq, idx) => {
         // Проекция Geo в Local
         const { x, z } = mapGeoToLocal(
           eq.lat, eq.lon, 
-          MAP_BOUNDS.minLat, MAP_BOUNDS.maxLat, 
-          MAP_BOUNDS.minLon, MAP_BOUNDS.maxLon, 
+          mapBounds.minLat, mapBounds.maxLat, 
+          mapBounds.minLon, mapBounds.maxLon, 
           TERRAIN_SIZE
         );
         // Получение Y высоты рельефа, чтобы эпицентр был четко на поверхности горы

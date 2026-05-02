@@ -12,10 +12,24 @@ from sqlalchemy.future import select
 from database import engine, Base, get_db
 from models import MeteorologicalDataLog, TerrainMap
 from schemas import WeatherDataSchema, WeatherReportResponse, TerrainMapResponse, UploadWeatherResponse
-from typing import List
+from typing import List, Optional
 from terrain_service import TerrainService
+from weather_service import get_live_wind_grid
+from pydantic import BaseModel as PydanticBaseModel
 
 app = FastAPI(title="Terrain Generator API (MVP)")
+
+# Схема ответа для /api/weather/live
+class LiveWindStationSchema(PydanticBaseModel):
+    name: str
+    lat: float
+    lon: float
+    azimuth_deg: float
+    speed_ms: float
+    color: str
+
+class LiveWeatherResponse(PydanticBaseModel):
+    wind_stations: List[LiveWindStationSchema]
 
 # Настройка CORS, чтобы React-фронтенд мог отправлять запросы на этот сервер
 app.add_middleware(
@@ -228,3 +242,24 @@ async def process_simulation(file: UploadFile = File(...), db: AsyncSession = De
         "terrain": terrain_data,
         "weather": validated_data.dict()
     }
+
+
+@app.get("/api/weather/live", response_model=LiveWeatherResponse)
+async def get_live_weather(lat: float, lon: float):
+    """
+    Получение реальных данных ветра с Open-Meteo API.
+    Генерирует 4 виртуальные метеостанции (Bounding Box) вокруг заданной точки
+    и возвращает массив wind_stations, совместимый с фронтендом.
+    """
+    try:
+        stations = await get_live_wind_grid(lat, lon)
+        if not stations:
+            raise HTTPException(
+                status_code=502,
+                detail="Не удалось получить данные от Open-Meteo. Проверьте подключение к интернету."
+            )
+        return {"wind_stations": stations}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ошибка сервиса погоды: {str(e)}")

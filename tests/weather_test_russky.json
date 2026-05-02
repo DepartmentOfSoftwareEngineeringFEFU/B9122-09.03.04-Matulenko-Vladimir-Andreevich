@@ -1,0 +1,45 @@
+{
+  "metadata": {
+    "center_lat": 43.05,
+    "center_lon": 131.89,
+    "zoom": 11
+  },
+  "wind_stations": [
+    {
+      "name": "Морской бриз (Уссурийский залив)",
+      "lat": 42.98,
+      "lon": 131.98,
+      "azimuth_deg": 135,
+      "speed_ms": 14,
+      "color": "#00bfff"
+    },
+    {
+      "name": "Материковый шторм (Север)",
+      "lat": 43.20,
+      "lon": 131.85,
+      "azimuth_deg": 350,
+      "speed_ms": 20,
+      "color": "#ffffff"
+    },
+    {
+      "name": "Амурский залив (Запад)",
+      "lat": 43.08,
+      "lon": 131.75,
+      "azimuth_deg": 270,
+      "speed_ms": 6,
+      "color": "#a855f7"
+    }
+  ],
+  "fog": {
+    "density_percent": 30,
+    "layer_thickness_km": 1.5
+  },
+  "earthquakes": [
+    {
+      "lat": 43.02,
+      "lon": 131.89,
+      "magnitude": 4.2,
+      "depth_km": 5
+    }
+  ]
+}

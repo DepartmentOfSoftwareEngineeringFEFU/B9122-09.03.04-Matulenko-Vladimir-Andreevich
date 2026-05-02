@@ -19,6 +19,7 @@ function App() {
   const [tileImage, setTileImage] = useState(null);
   const [tileCoverage, setTileCoverage] = useState(null);
   const [terrainMeta, setTerrainMeta] = useState(null);
+  const [tileBounds, setTileBounds] = useState(null);
 
   // Стейт менеджера слоев
   const [layers, setLayers] = useState({
@@ -60,6 +61,7 @@ function App() {
         minMeters: data.terrain.min_height_meters,
         maxMeters: data.terrain.max_height_meters,
       });
+      setTileBounds(data.terrain.tile_bounds);
       
       // Обновляем погоду
       setWeatherData(data.weather);
@@ -123,6 +125,7 @@ function App() {
             heightData={heightData}
             resolution={resolution}
             zScale={zScale}
+            tileBounds={tileBounds}
           />
         </Canvas>
 

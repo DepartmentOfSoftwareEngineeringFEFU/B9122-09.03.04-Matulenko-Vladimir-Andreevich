@@ -81,11 +81,20 @@ class TerrainService:
         equator_width = equator_length_km / (2 ** zoom)
         tile_width_km = equator_width * math.cos(math.radians(lat))
 
+        # Реальные географические границы тайла (для проекции метеостанций)
+        bounds = mercantile.bounds(tile)
+
         return {
             "matrix": heights_list,
             "size": tile_size,
             "min_height_meters": min_meters,
             "max_height_meters": max_meters,
             "image_base64": image_b64,
-            "tile_width_km": round(tile_width_km, 2)
+            "tile_width_km": round(tile_width_km, 2),
+            "tile_bounds": {
+                "minLat": round(bounds.south, 6),
+                "maxLat": round(bounds.north, 6),
+                "minLon": round(bounds.west, 6),
+                "maxLon": round(bounds.east, 6)
+            }
         }

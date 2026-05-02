@@ -22,3 +22,6 @@ Thumbs.db
 
 # IDE настройки (опционально, можно убрать если хотите хранить)
 # .vscode/
+
+# Production-������ Vite
+frontend/dist/
