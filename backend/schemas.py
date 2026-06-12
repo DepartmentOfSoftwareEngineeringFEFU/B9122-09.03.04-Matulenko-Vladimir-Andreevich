@@ -9,8 +9,13 @@ class EarthquakeSchema(BaseModel):
     lon: float = Field(..., ge=-180, le=180, description="Географическая долгота")
 
 class FogSchema(BaseModel):
-    density_percent: float = Field(..., ge=0, le=100, description="Плотность тумана от 0% до 100%")
-    layer_thickness_km: float = Field(..., ge=1, le=9, description="Толщина слоя тумана в км")
+    # Новый контракт (production-формат для шейдерного тумана)
+    density: Optional[float] = Field(None, ge=0.0, le=1.0, description="Плотность тумана от 0.0 до 1.0")
+    top_height_m: Optional[float] = Field(None, ge=0, le=5000, description="Высота верхней границы слоя тумана в метрах")
+    color: Optional[str] = Field(None, description="HEX-цвет тумана, например #e0e6ed")
+    # Legacy-поля (обратная совместимость со старыми JSON-файлами)
+    density_percent: Optional[float] = Field(None, ge=0, le=100, description="[Legacy] Плотность от 0% до 100%")
+    layer_thickness_km: Optional[float] = Field(None, ge=1, le=9, description="[Legacy] Толщина слоя в км")
 
 class WindSchema(BaseModel):
     speed_ms: float = Field(..., ge=0, le=33, description="Скорость ветра м/с до ураганных значений")

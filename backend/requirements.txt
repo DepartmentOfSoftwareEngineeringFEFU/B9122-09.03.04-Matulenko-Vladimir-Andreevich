@@ -7,5 +7,5 @@ sqlalchemy
 asyncpg
 pydantic
 aiosqlite
-httpx
+aiohttp
 mercantile

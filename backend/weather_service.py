@@ -4,9 +4,11 @@ WeatherService — Сервис получения реальных метеод
 Использует алгоритм Bounding Box для генерации 4 виртуальных метеостанций
 по углам области вокруг заданного центра, запрашивая реальные данные ветра
 для каждой точки параллельно через asyncio.gather.
+
+Использует aiohttp вместо httpx — более совместим с системными прокси Windows.
 """
 
-import httpx
+import aiohttp
 import asyncio
 from typing import List, Dict, Optional
 
@@ -17,7 +19,7 @@ from typing import List, Dict, Optional
 OFFSET_DEG = 0.05
 
 # Таймаут HTTP-запроса к Open-Meteo (секунды)
-REQUEST_TIMEOUT = 10.0
+REQUEST_TIMEOUT = 15.0
 
 # Имена точек для удобства отображения на фронтенде
 POINT_NAMES = [
@@ -56,7 +58,7 @@ def _generate_grid_points(center_lat: float, center_lon: float) -> List[Dict]:
 
 
 async def _fetch_weather_for_point(
-    client: httpx.AsyncClient,
+    session: aiohttp.ClientSession,
     point: Dict
 ) -> Optional[Dict]:
     """
@@ -80,9 +82,9 @@ async def _fetch_weather_for_point(
     }
 
     try:
-        response = await client.get(url, params=params)
-        response.raise_for_status()
-        data = response.json()
+        async with session.get(url, params=params) as response:
+            response.raise_for_status()
+            data = await response.json()
 
         current = data.get("current_weather", {})
         windspeed_kmh = current.get("windspeed", 0)
@@ -100,7 +102,7 @@ async def _fetch_weather_for_point(
             "color": point["color"],
         }
 
-    except (httpx.HTTPError, httpx.TimeoutException, Exception) as e:
+    except Exception as e:
         print(f"[WeatherService] Ошибка запроса для {point['name']} "
               f"({point['lat']}, {point['lon']}): {e}")
         return None
@@ -122,11 +124,12 @@ async def get_live_wind_grid(
             { name, lat, lon, azimuth_deg, speed_ms, color }
     """
     grid_points = _generate_grid_points(center_lat, center_lon)
+    timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)
 
-    async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
+    async with aiohttp.ClientSession(timeout=timeout) as session:
         # asyncio.gather запускает все 4 запроса ПАРАЛЛЕЛЬНО
         results = await asyncio.gather(
-            *[_fetch_weather_for_point(client, pt) for pt in grid_points],
+            *[_fetch_weather_for_point(session, pt) for pt in grid_points],
             return_exceptions=False,
         )
 

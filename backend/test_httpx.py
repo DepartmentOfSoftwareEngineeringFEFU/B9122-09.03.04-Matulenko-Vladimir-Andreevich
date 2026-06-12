@@ -1,19 +1,14 @@
-import httpx
+import aiohttp
 import asyncio
-import traceback
 
 async def test():
-    url = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/11/1201/763.png"
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(url)
-            print("OK:", resp.status_code)
-            print("Len:", len(resp.content))
-    except Exception as e:
-        print("Error type:", type(e))
-        print("Error str:", str(e))
-        print("Traceback:")
-        traceback.print_exc()
+    url = "https://api.open-meteo.com/v1/forecast"
+    params = {"latitude": 43.11, "longitude": 131.88, "current_weather": "true"}
+    timeout = aiohttp.ClientTimeout(total=15)
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url, params=params, timeout=timeout) as r:
+            d = await r.json()
+            print("STATUS:", r.status)
+            print("WIND:", d.get("current_weather", {}))
 
-if __name__ == "__main__":
-    asyncio.run(test())
+asyncio.run(test())

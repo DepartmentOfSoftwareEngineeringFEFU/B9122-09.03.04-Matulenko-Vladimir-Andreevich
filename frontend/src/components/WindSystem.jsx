@@ -80,8 +80,8 @@ const WindSystem = ({ windStations, windDataLegacy, terrainMatrix, terrainSize, 
         const azRad = (st.azimuth_deg * Math.PI) / 180;
         const vx = Math.sin(azRad) * st.speed_ms * VISUAL_SPEED_MULTIPLIER;
         const vz = Math.cos(azRad) * st.speed_ms * VISUAL_SPEED_MULTIPLIER;
-        // Каждой станции присваиваем цвет из палитры (по индексу, циклически)
-        const color = STATION_COLORS[idx % STATION_COLORS.length];
+        // Используем цвет из данных станции, если он есть. Иначе из палитры.
+        const color = st.color ? new THREE.Color(st.color) : STATION_COLORS[idx % STATION_COLORS.length];
         return { x, z, vx, vz, color };
       });
     }

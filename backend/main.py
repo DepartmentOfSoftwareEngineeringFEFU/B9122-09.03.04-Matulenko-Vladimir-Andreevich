@@ -233,12 +233,16 @@ async def process_simulation(file: UploadFile = File(...), db: AsyncSession = De
         )
         db.add(new_log)
         await db.commit()
+        await db.refresh(new_log)
+        file_id = new_log.id
     except Exception as e:
         await db.rollback()
+        file_id = None
         print(f"Database error: {e}")
 
     # Формируем итоговый JSON-ответ
     return {
+        "file_id": file_id,
         "terrain": terrain_data,
         "weather": validated_data.dict()
     }

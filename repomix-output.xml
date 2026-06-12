@@ -1,0 +1,3124 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+.gitignore
+backend/database.py
+backend/main.py
+backend/models.py
+backend/requirements.txt
+backend/schemas.py
+backend/terrain_service.py
+backend/test_httpx.py
+backend/weather_service.py
+frontend/index.html
+frontend/package.json
+frontend/postcss.config.js
+frontend/src/App.jsx
+frontend/src/components/FogLayer.jsx
+frontend/src/components/ReportModal.jsx
+frontend/src/components/Sidebar.jsx
+frontend/src/components/Terrain.jsx
+frontend/src/components/WeatherEffects.jsx
+frontend/src/components/WindSystem.jsx
+frontend/src/index.css
+frontend/src/main.jsx
+frontend/src/utils/geo.js
+frontend/tailwind.config.js
+frontend/vite.config.js
+README.md
+tests/test_aws.py
+tests/test_terrain.png
+tests/test.json
+tests/weather_idw_stress_test.json
+tests/weather_mode_custom.json
+tests/weather_mode_live.json
+tests/weather_moscow.json
+tests/weather_spb.json
+tests/weather_test_russky.json
+tests/weather_test_vladivostok.json
+tests/weather_ussuriysk.json
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path="frontend/src/components/FogLayer.jsx">
+import React, { useRef, useMemo, useEffect } from 'react';
+import * as THREE from 'three';
+import { useFrame } from '@react-three/fiber';
+
+// ============================================================
+// ВЕРШИННЫЙ ШЕЙДЕР
+// Передаёт UV для чтения карты высот и шумовой маски.
+// ============================================================
+const vertexShader = `
+  varying vec2 vUv;
+
+  void main() {
+    vUv = uv;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  }
+`;
+
+// ============================================================
+// ФРАГМЕНТНЫЙ ШЕЙДЕР
+//
+// Архитектура (без DepthTexture):
+//   1. FBM Value Noise — клубящиеся пятна, медленно плывущие по карте.
+//   2. Terrain-RGB пересечения — читаем AWS-текстуру по vUv,
+//      декодируем высоту (Mapbox Terrain-RGB формула),
+//      сравниваем с uTopHeight → heightFade.
+//   3. Радиальная маска — ограничивает туман кругом вокруг
+//      uFogCenterUv с мягким затуханием на границе.
+//   4. Краевой фейд — убирает прямоугольное обрезание плоскости.
+// ============================================================
+const fragmentShader = `
+  uniform float uTime;
+  uniform float uDensity;
+  uniform vec3  uColor;
+  uniform sampler2D uHeightmap;
+  uniform float uTopHeight;     // Высота верхней границы тумана (метры)
+  uniform vec2  uFogCenterUv;   // UV-координаты центра тумана
+  uniform float uFogRadiusUv;   // Радиус тумана в UV-пространстве
+
+  varying vec2 vUv;
+
+  // ----------------------------------------------------------
+  // Value Noise (без lookup-таблиц, всё вычислительно)
+  // ----------------------------------------------------------
+  float hash(vec2 p) {
+    p = fract(p * vec2(127.1, 311.7));
+    p += dot(p, p + 19.19);
+    return fract(p.x * p.y);
+  }
+
+  float valueNoise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    vec2 u = f * f * (3.0 - 2.0 * f);
+
+    float a = hash(i);
+    float b = hash(i + vec2(1.0, 0.0));
+    float c = hash(i + vec2(0.0, 1.0));
+    float d = hash(i + vec2(1.0, 1.0));
+
+    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+  }
+
+  // Фрактальный (FBM) шум — 5 октав для детализации клубов
+  float fbm(vec2 p) {
+    float value = 0.0;
+    float amplitude = 0.5;
+    float frequency = 1.0;
+    for (int i = 0; i < 5; i++) {
+      value += amplitude * valueNoise(p * frequency);
+      amplitude *= 0.5;
+      frequency *= 2.1;
+    }
+    return value;
+  }
+
+  void main() {
+    // ============================================================
+    // 1. ШУМОВАЯ МАСКА (два слоя с разной скоростью → завихрение)
+    // ============================================================
+    vec2 uv1 = vUv * 3.0 + vec2(uTime * 0.04, uTime * 0.025);
+    vec2 uv2 = vUv * 2.0 - vec2(uTime * 0.03, uTime * 0.015);
+
+    float noise1 = fbm(uv1);
+    float noise2 = fbm(uv2);
+    float noiseMask = noise1 * 0.6 + noise2 * 0.4;
+    noiseMask = smoothstep(0.28, 0.72, noiseMask);
+
+    // ============================================================
+    // 2. ВЫСОТНОЕ ПЕРЕСЕЧЕНИЕ (Terrarium → метры)
+    //
+    // Декодирование Mapzen Terrarium:
+    //   height = (R * 256.0 + G + B / 256.0) - 32768.0
+    // Где R,G,B в диапазоне [0, 255] (texture2D возвращает [0,1],
+    // поэтому умножаем на 255.0).
+    // ============================================================
+    vec4 texColor = texture2D(uHeightmap, vUv);
+    float R = texColor.r * 255.0;
+    float G = texColor.g * 255.0;
+    float B = texColor.b * 255.0;
+    float terrainHeight = (R * 256.0) + G + (B / 256.0) - 32768.0;
+
+    // Разница: положительная = туман выше рельефа, отрицательная = гора пробивает туман
+    float delta = uTopHeight - terrainHeight;
+
+    // Градиент пересечения: 0 = гора выше тумана, 1 = туман выше (плоскость)
+    // 20 метров = ширина зоны мягкого перехода
+    float heightFade = smoothstep(0.0, 20.0, delta);
+
+    // ============================================================
+    // 3. РАДИАЛЬНАЯ МАСКА (ограничение тумана по области)
+    // ============================================================
+    float distToCenter = distance(vUv, uFogCenterUv);
+    float radialMask = 1.0 - smoothstep(uFogRadiusUv * 0.5, uFogRadiusUv, distToCenter);
+
+    // ============================================================
+    // 4. КРАЕВОЙ ФЕЙД (убирает прямоугольник плоскости)
+    // ============================================================
+    vec2 centeredUV = abs(vUv - 0.5) * 2.0;
+    float edgeFade = 1.0 - smoothstep(0.7, 1.0, max(centeredUV.x, centeredUV.y));
+
+    // ============================================================
+    // 5. ФИНАЛЬНАЯ ПРОЗРАЧНОСТЬ
+    // ============================================================
+    float finalAlpha = uDensity * noiseMask * heightFade * radialMask * edgeFade;
+    finalAlpha = clamp(finalAlpha, 0.0, 0.88);
+
+    if (finalAlpha < 0.01) discard;
+
+    gl_FragColor = vec4(uColor, finalAlpha);
+  }
+`;
+
+// ============================================================
+// Вспомогательные функции
+// ============================================================
+const hexToThreeColor = (hex) => {
+  try { return new THREE.Color(hex); }
+  catch { return new THREE.Color('#e0e6ed'); }
+};
+
+/**
+ * Конвертация географических координат (lat, lon) в UV-пространство
+ * текстуры Terrain-RGB (0,0 = юго-запад; 1,1 = северо-восток).
+ */
+const geoToUv = (lat, lon, bounds) => {
+  if (!bounds) return { u: 0.5, v: 0.5 };
+  const u = (lon - bounds.minLon) / (bounds.maxLon - bounds.minLon);
+  // V инвертирован: в текстуре 0 = верх (север), 1 = низ (юг)
+  // Но planeGeometry по умолчанию: UV(0,0) = нижний-левый
+  // Поэтому v = (lat - minLat) / (maxLat - minLat)
+  const v = (lat - bounds.minLat) / (bounds.maxLat - bounds.minLat);
+  return {
+    u: Math.max(0, Math.min(1, u)),
+    v: Math.max(0, Math.min(1, v)),
+  };
+};
+
+// ============================================================
+// FogLayer — компонент шейдерного низинного тумана
+//
+// Архитектура:
+//   - Использует Terrain-RGB текстуру (AWS) для пересечений
+//   - Не использует DepthTexture / useDepthBuffer
+//   - frustumCulled = false для стабильности
+//   - Радиальная маска ограничивает область тумана
+// ============================================================
+const FogLayer = ({ fogData, zScale, terrainMeta, tileImage, tileCoverage, mapBounds }) => {
+  const meshRef = useRef();
+  const matRef  = useRef();
+
+  // ----------------------------------------------------------
+  // Создаём THREE.Texture из base64 Terrain-RGB тайла
+  // ----------------------------------------------------------
+  const heightmapTexture = useMemo(() => {
+    if (!tileImage) return null;
+
+    const img = new Image();
+    img.src = `data:image/png;base64,${tileImage}`;
+
+    const tex = new THREE.Texture(img);
+    tex.minFilter = THREE.LinearFilter;
+    tex.magFilter = THREE.LinearFilter;
+    tex.wrapS = THREE.ClampToEdgeWrapping;
+    tex.wrapT = THREE.ClampToEdgeWrapping;
+
+    img.onload = () => {
+      tex.needsUpdate = true;
+    };
+
+    return tex;
+  }, [tileImage]);
+
+  // ----------------------------------------------------------
+  // Нормализуем данные тумана (новый + legacy формат)
+  // ----------------------------------------------------------
+  const fogConfig = useMemo(() => {
+    if (!fogData) return null;
+
+    // Новый формат (density, top_height_m, color, lat, lon, radius_km)
+    if (fogData.density !== undefined && fogData.density !== null) {
+      return {
+        density:      fogData.density,
+        top_height_m: fogData.top_height_m ?? 200,
+        color:        hexToThreeColor(fogData.color ?? '#e0e6ed'),
+        lat:          fogData.lat ?? null,
+        lon:          fogData.lon ?? null,
+        radius_km:    fogData.radius_km ?? null,
+      };
+    }
+
+    // Legacy формат (density_percent, layer_thickness_km)
+    const density = (fogData.density_percent ?? 50) / 100;
+    const top_height_m = (fogData.layer_thickness_km ?? 1.5) * 100;
+    return {
+      density,
+      top_height_m,
+      color:     hexToThreeColor('#dce8f0'),
+      lat:       null,
+      lon:       null,
+      radius_km: null,
+    };
+  }, [fogData]);
+
+  // ----------------------------------------------------------
+  // Вычисляем UV-координаты центра тумана и радиус в UV
+  // ----------------------------------------------------------
+  const { fogCenterUv, fogRadiusUv } = useMemo(() => {
+    if (!fogConfig) return { fogCenterUv: [0.5, 0.5], fogRadiusUv: 1.0 };
+
+    // Если lat/lon/radius_km не заданы — покрываем всю карту
+    if (fogConfig.lat === null || fogConfig.lon === null || fogConfig.radius_km === null) {
+      return { fogCenterUv: [0.5, 0.5], fogRadiusUv: 1.0 };
+    }
+
+    const { u, v } = geoToUv(fogConfig.lat, fogConfig.lon, mapBounds);
+
+    // tileCoverage — ширина тайла в км
+    // Радиус в UV = radius_km / tileCoverage_km
+    const mapSizeKm = tileCoverage || 14; // фоллбэк ~14 км для zoom=11
+    const radiusUv = fogConfig.radius_km / mapSizeKm;
+
+    return {
+      fogCenterUv: [u, v],
+      fogRadiusUv: Math.min(radiusUv, 1.0),
+    };
+  }, [fogConfig, mapBounds, tileCoverage]);
+
+  // ----------------------------------------------------------
+  // ShaderMaterial (создаём один раз)
+  // ----------------------------------------------------------
+  const shaderMaterial = useMemo(() => new THREE.ShaderMaterial({
+    vertexShader,
+    fragmentShader,
+    transparent: true,
+    depthWrite:  false,
+    side: THREE.DoubleSide,
+    uniforms: {
+      uTime:         { value: 0 },
+      uDensity:      { value: 0.6 },
+      uColor:        { value: new THREE.Color('#e0e6ed') },
+      uHeightmap:    { value: null },
+      uTopHeight:    { value: 200.0 },
+      uFogCenterUv:  { value: new THREE.Vector2(0.5, 0.5) },
+      uFogRadiusUv:  { value: 1.0 },
+    },
+  }), []);
+
+  // ----------------------------------------------------------
+  // Обновляем юниформы каждый кадр (анимация + данные)
+  // ----------------------------------------------------------
+  useFrame((state) => {
+    if (!matRef.current || !fogConfig) return;
+
+    const u = matRef.current.uniforms;
+    u.uTime.value        = state.clock.getElapsedTime();
+    u.uDensity.value     = fogConfig.density;
+    u.uColor.value       = fogConfig.color;
+    u.uHeightmap.value   = heightmapTexture;
+    u.uTopHeight.value   = fogConfig.top_height_m;
+    u.uFogCenterUv.value.set(fogCenterUv[0], fogCenterUv[1]);
+    u.uFogRadiusUv.value = fogRadiusUv;
+  });
+
+  // Высота плоскости тумана в Three.js units
+  const fogY = useMemo(() => {
+    if (!fogConfig || !terrainMeta || terrainMeta.maxMeters <= terrainMeta.minMeters) {
+      return 2; // фоллбэк
+    }
+    const range = terrainMeta.maxMeters - terrainMeta.minMeters;
+    const normalizedHeight = (fogConfig.top_height_m - terrainMeta.minMeters) / range;
+    return Math.max(0.1, normalizedHeight * zScale);
+  }, [fogConfig, terrainMeta, zScale]);
+
+  if (!fogConfig || !heightmapTexture) return null;
+
+  return (
+    <mesh
+      ref={meshRef}
+      position={[0, fogY, 0]}
+      rotation={[-Math.PI / 2, 0, 0]}
+      frustumCulled={false}
+    >
+      <planeGeometry args={[220, 220, 1, 1]} />
+      <primitive ref={matRef} object={shaderMaterial} attach="material" />
+    </mesh>
+  );
+};
+
+export default FogLayer;
+</file>
+
+<file path="tests/test.json">
+{
+    "metadata": {
+        "center_lat": 43.1155,
+        "center_lon": 131.8855,
+        "zoom": 11
+    },
+    "fog": {
+        "density": 0.7,
+        "top_height_m": 180,
+        "color": "#c8d8e8",
+        "lat": 43.11,
+        "lon": 131.88,
+        "radius_km": 5.0
+    },
+    "earthquakes": [
+        {
+            "lat": 43.11,
+            "lon": 131.88,
+            "magnitude": 3.5,
+            "depth_km": 12
+        }
+    ]
+}
+</file>
+
+<file path="tests/weather_mode_custom.json">
+{
+    "metadata": {
+        "center_lat": 43.1155,
+        "center_lon": 131.8855,
+        "zoom": 11
+    },
+    "wind_stations": [
+        {
+            "name": "Кастомная станция 1",
+            "lat": 43.165,
+            "lon": 131.835,
+            "azimuth_deg": 45.0,
+            "speed_ms": 25.5,
+            "color": "#ff3333"
+        },
+        {
+            "name": "Кастомная станция 2",
+            "lat": 43.065,
+            "lon": 131.935,
+            "azimuth_deg": 135.0,
+            "speed_ms": 2.0,
+            "color": "#33ff33"
+        },
+        {
+            "name": "Кастомная станция 3",
+            "lat": 43.065,
+            "lon": 131.835,
+            "azimuth_deg": 270.0,
+            "speed_ms": 12.0,
+            "color": "#3333ff"
+        },
+        {
+            "name": "Кастомная станция 4",
+            "lat": 43.165,
+            "lon": 131.935,
+            "azimuth_deg": 0.0,
+            "speed_ms": 7.5,
+            "color": "#ffff33"
+        }
+    ],
+    "fog": {
+        "density": 0.5,
+        "top_height_m": 100,
+        "color": "#cccccc",
+        "lat": 43.11,
+        "lon": 131.88,
+        "radius_km": 8.0
+    },
+    "earthquakes": []
+}
+</file>
+
+<file path="tests/weather_mode_live.json">
+{
+    "metadata": {
+        "center_lat": 43.1155,
+        "center_lon": 131.8855,
+        "zoom": 11
+    },
+    "fog": {
+        "density": 0.7,
+        "top_height_m": 180,
+        "color": "#c8d8e8",
+        "lat": 43.11,
+        "lon": 131.88,
+        "radius_km": 5.0
+    },
+    "earthquakes": [
+        {
+            "lat": 43.11,
+            "lon": 131.88,
+            "magnitude": 3.5,
+            "depth_km": 12
+        }
+    ]
+}
+</file>
+
+<file path="backend/database.py">
+import os
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from sqlalchemy.orm import sessionmaker, declarative_base
+
+# Используем SQLite для локального MVP, чтобы проект работал "из коробки" без установки PostgreSQL
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./weather_db.db")
+
+# Включаем echo=True для отображения логов SQL в консоли
+engine = create_async_engine(DATABASE_URL, echo=True)
+
+# Создаем фабрику асинхронных сессий
+async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+# Базовый класс для всех моделей (таблиц)
+Base = declarative_base()
+
+# Генератор сессий для Dependency Injection в FastAPI
+async def get_db():
+    async with async_session() as session:
+        yield session
+</file>
+
+<file path="backend/models.py">
+from sqlalchemy import Column, Integer, String, DateTime, Float
+from datetime import datetime
+from database import Base
+
+class MeteorologicalDataLog(Base):
+    __tablename__ = "weather_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    filename = Column(String, index=True)
+    upload_time = Column(DateTime, default=datetime.utcnow)
+    status = Column(String)
+    
+    # Поля для отчета по требованию MET_004
+    total_records = Column(Integer, default=0)
+    earthquakes_count = Column(Integer, default=0)
+    fog_count = Column(Integer, default=0)
+    wind_count = Column(Integer, default=0)
+    
+    # Пространственный охват
+    min_lat = Column(Float, nullable=True)
+    max_lat = Column(Float, nullable=True)
+    min_lon = Column(Float, nullable=True)
+    max_lon = Column(Float, nullable=True)
+
+class TerrainMap(Base):
+    __tablename__ = "terrain_maps"
+
+    id = Column(Integer, primary_key=True, index=True)
+    filename = Column(String, index=True)
+    upload_time = Column(DateTime, default=datetime.utcnow)
+    resolution_x = Column(Integer)
+    resolution_y = Column(Integer)
+</file>
+
+<file path="backend/test_httpx.py">
+import aiohttp
+import asyncio
+
+async def test():
+    url = "https://api.open-meteo.com/v1/forecast"
+    params = {"latitude": 43.11, "longitude": 131.88, "current_weather": "true"}
+    timeout = aiohttp.ClientTimeout(total=15)
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url, params=params, timeout=timeout) as r:
+            d = await r.json()
+            print("STATUS:", r.status)
+            print("WIND:", d.get("current_weather", {}))
+
+asyncio.run(test())
+</file>
+
+<file path="backend/weather_service.py">
+"""
+WeatherService — Сервис получения реальных метеоданных с Open-Meteo API.
+
+Использует алгоритм Bounding Box для генерации 4 виртуальных метеостанций
+по углам области вокруг заданного центра, запрашивая реальные данные ветра
+для каждой точки параллельно через asyncio.gather.
+
+Использует aiohttp вместо httpx — более совместим с системными прокси Windows.
+"""
+
+import aiohttp
+import asyncio
+from typing import List, Dict, Optional
+
+
+# Отступ в градусах от центральной точки для формирования Bounding Box.
+# 0.05° ≈ 5.5 км на экваторе, ~4 км на широте Владивостока.
+# Итого BBox покрывает область ~8×8 км — достаточно для IDW-интерполяции.
+OFFSET_DEG = 0.05
+
+# Таймаут HTTP-запроса к Open-Meteo (секунды)
+REQUEST_TIMEOUT = 15.0
+
+# Имена точек для удобства отображения на фронтенде
+POINT_NAMES = [
+    "Северо-Запад",
+    "Северо-Восток",
+    "Юго-Запад",
+    "Юго-Восток",
+]
+
+# Цвета для каждой из 4 станций (используются фронтендом для визуализации)
+POINT_COLORS = [
+    "#00bfff",  # Голубой
+    "#ff6b6b",  # Коралловый
+    "#51cf66",  # Зелёный
+    "#ffd43b",  # Жёлтый
+]
+
+
+def _generate_grid_points(center_lat: float, center_lon: float) -> List[Dict]:
+    """
+    Генерация 4 точек Bounding Box вокруг центральной координаты.
+
+    Схема:
+      NW ---- NE
+      |  cent  |
+      SW ---- SE
+
+    Каждая точка смещена на ±OFFSET_DEG по широте и долготе.
+    """
+    return [
+        {"name": POINT_NAMES[0], "lat": center_lat + OFFSET_DEG, "lon": center_lon - OFFSET_DEG, "color": POINT_COLORS[0]},  # NW
+        {"name": POINT_NAMES[1], "lat": center_lat + OFFSET_DEG, "lon": center_lon + OFFSET_DEG, "color": POINT_COLORS[1]},  # NE
+        {"name": POINT_NAMES[2], "lat": center_lat - OFFSET_DEG, "lon": center_lon - OFFSET_DEG, "color": POINT_COLORS[2]},  # SW
+        {"name": POINT_NAMES[3], "lat": center_lat - OFFSET_DEG, "lon": center_lon + OFFSET_DEG, "color": POINT_COLORS[3]},  # SE
+    ]
+
+
+async def _fetch_weather_for_point(
+    session: aiohttp.ClientSession,
+    point: Dict
+) -> Optional[Dict]:
+    """
+    Запрос текущей погоды для одной точки через Open-Meteo API.
+
+    Open-Meteo API (бесплатное, без ключа):
+      GET https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current_weather=true
+
+    Ответ содержит:
+      current_weather.windspeed       — скорость в км/ч
+      current_weather.winddirection   — азимут в градусах (откуда дует ветер)
+      current_weather.temperature     — температура °C
+
+    Конвертация: км/ч → м/с: умножаем на 0.277778 (т.е. делим на 3.6)
+    """
+    url = "https://api.open-meteo.com/v1/forecast"
+    params = {
+        "latitude": point["lat"],
+        "longitude": point["lon"],
+        "current_weather": "true",
+    }
+
+    try:
+        async with session.get(url, params=params) as response:
+            response.raise_for_status()
+            data = await response.json()
+
+        current = data.get("current_weather", {})
+        windspeed_kmh = current.get("windspeed", 0)
+        winddirection = current.get("winddirection", 0)
+
+        # Конвертация км/ч → м/с
+        speed_ms = round(windspeed_kmh * 0.277778, 2)
+
+        return {
+            "name": point["name"],
+            "lat": point["lat"],
+            "lon": point["lon"],
+            "azimuth_deg": winddirection,
+            "speed_ms": speed_ms,
+            "color": point["color"],
+        }
+
+    except Exception as e:
+        print(f"[WeatherService] Ошибка запроса для {point['name']} "
+              f"({point['lat']}, {point['lon']}): {e}")
+        return None
+
+
+async def get_live_wind_grid(
+    center_lat: float,
+    center_lon: float
+) -> List[Dict]:
+    """
+    Основная функция: получить реальные данные ветра для 4 точек вокруг центра.
+
+    1. Генерирует 4 точки Bounding Box (NW, NE, SW, SE).
+    2. Отправляет 4 параллельных HTTP-запроса к Open-Meteo через asyncio.gather.
+    3. Фильтрует неудачные запросы (None) и возвращает массив станций.
+
+    Returns:
+        List[Dict] — массив объектов, совместимых с контрактом WindSystem:
+            { name, lat, lon, azimuth_deg, speed_ms, color }
+    """
+    grid_points = _generate_grid_points(center_lat, center_lon)
+    timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)
+
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        # asyncio.gather запускает все 4 запроса ПАРАЛЛЕЛЬНО
+        results = await asyncio.gather(
+            *[_fetch_weather_for_point(session, pt) for pt in grid_points],
+            return_exceptions=False,
+        )
+
+    # Отфильтровываем None (неудачные запросы)
+    stations = [r for r in results if r is not None]
+
+    return stations
+</file>
+
+<file path="frontend/index.html">
+<!DOCTYPE html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>3D Terrain MVP</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
+</file>
+
+<file path="frontend/postcss.config.js">
+export default {
+  plugins: {
+    tailwindcss: {},
+    autoprefixer: {},
+  },
+}
+</file>
+
+<file path="frontend/src/components/ReportModal.jsx">
+import React, { useEffect, useState } from 'react';
+
+const ReportModal = ({ fileId, onClose }) => {
+  const [report, setReport] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    if (!fileId) return;
+    
+    // Получаем отчет по ID загруженного файла с бэкенда (MET_004)
+    const fetchReport = async () => {
+      try {
+        const res = await fetch(`http://localhost:8000/api/v1/weather/report/${fileId}`);
+        if (!res.ok) throw new Error('Не удалось загрузить отчет');
+        const data = await res.json();
+        setReport(data);
+      } catch (err) {
+        setError(err.message);
+      } finally {
+        setLoading(false);
+      }
+    };
+    
+    fetchReport();
+  }, [fileId]);
+
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+      <div className="bg-slate-800 border border-slate-600 rounded-xl max-w-md w-full p-6 shadow-2xl relative">
+        <button 
+          onClick={onClose}
+          className="absolute top-4 right-4 text-slate-400 hover:text-white"
+        >
+          ✕
+        </button>
+        
+        <h2 className="text-xl font-bold text-blue-400 mb-4 border-b border-slate-700 pb-2">
+          Сводный отчет по данным
+        </h2>
+
+        {loading ? (
+          <p className="text-slate-300 animate-pulse">Генерация отчета...</p>
+        ) : error ? (
+          <p className="text-red-400">{error}</p>
+        ) : report ? (
+          <div className="flex flex-col gap-3 text-sm text-slate-300">
+            <p><span className="font-semibold text-white">Файл:</span> {report.filename}</p>
+            <p><span className="font-semibold text-white">Дата загрузки:</span> {new Date(report.upload_time).toLocaleString('ru-RU')}</p>
+            <p><span className="font-semibold text-white">Общее кол-во объектов:</span> {report.total_records}</p>
+            
+            <div className="my-2 p-3 bg-slate-900 rounded-lg">
+              <h3 className="font-semibold text-purple-400 mb-1">Распознанные явления:</h3>
+              <ul className="list-disc list-inside">
+                <li>Землетрясений: {report.earthquakes_count}</li>
+                <li>Слоёв тумана: {report.fog_count}</li>
+                <li>Измерений ветра: {report.wind_count}</li>
+              </ul>
+            </div>
+
+            <div className="my-2 p-3 bg-slate-900 rounded-lg">
+              <h3 className="font-semibold text-green-400 mb-1">Пространственный охват:</h3>
+              {report.min_lat !== null ? (
+                <ul className="list-disc list-inside text-xs">
+                  <li>Широта (Lat): {report.min_lat?.toFixed(2)}° до {report.max_lat?.toFixed(2)}°</li>
+                  <li>Долгота (Lon): {report.min_lon?.toFixed(2)}° до {report.max_lon?.toFixed(2)}°</li>
+                </ul>
+              ) : (
+                <p className="text-xs text-slate-500">Нет географических данных</p>
+              )}
+            </div>
+            
+            <button 
+              onClick={onClose}
+              className="mt-4 bg-blue-600 hover:bg-blue-500 text-white font-semibold py-2 px-4 rounded w-full transition-colors"
+            >
+              Перейти к визуализации
+            </button>
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+};
+
+export default ReportModal;
+</file>
+
+<file path="frontend/src/index.css">
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body, #root {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+}
+</file>
+
+<file path="frontend/src/main.jsx">
+import React from 'react'
+import ReactDOM from 'react-dom/client'
+import App from './App.jsx'
+import './index.css'
+
+ReactDOM.createRoot(document.getElementById('root')).render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>,
+)
+</file>
+
+<file path="frontend/src/utils/geo.js">
+/**
+ * Интерполирует реальные географические координаты (широта и долгота) 
+ * в локальные 3D-координаты сцены (X и Z).
+ * 
+ * Математическая модель:
+ * Сцена Three.js имеет начало координат в центре (0, 0, 0). 
+ * Плоскость рельефа имеет размер terrainSize x terrainSize.
+ * Следовательно, координаты X и Z на плоскости меняются от -terrainSize/2 до +terrainSize/2.
+ * 
+ * Функция берет процентное соотношение lat/lon относительно заданного ограничивающего 
+ * прямоугольника (bounding box) и проецирует его на локальную сетку.
+ * 
+ * @param {number} lat - Широта текущего объекта
+ * @param {number} lon - Долгота текущего объекта
+ * @param {number} minLat - Минимальная широта карты рельефа
+ * @param {number} maxLat - Максимальная широта карты рельефа
+ * @param {number} minLon - Минимальная долгота карты рельефа
+ * @param {number} maxLon - Максимальная долгота карты рельефа
+ * @param {number} terrainSize - Физический размер 3D плоскости (например, 200)
+ * @returns {object} { x, z } - Локальные координаты Three.js
+ */
+export function mapGeoToLocal(lat, lon, minLat, maxLat, minLon, maxLon, terrainSize) {
+    // 1. Вычисляем долю (от 0.0 до 1.0) нахождения точки внутри прямоугольника.
+    // Если lon = minLon, то dx = 0. Если lon = maxLon, то dx = 1.
+    let dx = (lon - minLon) / (maxLon - minLon);
+    
+    // Для широты (Y/Z ось). Широта растет снизу вверх, как и ось Z в 3D (с отрицательной стороны в положительную в зависимости от камеры,
+    // но в Three.js Z уходит "вглубь экрана" как отрицательный, поэтому инвертируем или мапим напрямую).
+    // Стандартно: minLat (юг) -> внизу, maxLat (север) -> вверху.
+    let dz = (lat - minLat) / (maxLat - minLat);
+
+    // Защита от выхода за границы 3D модели (если данные погоды за пределами карты)
+    dx = Math.max(0, Math.min(1, dx));
+    dz = Math.max(0, Math.min(1, dz));
+
+    // 2. Переводим долю в 3D координаты.
+    // Сцена от -terrainSize/2 до +terrainSize/2
+    const halfSize = terrainSize / 2;
+    
+    // Внимание: в плоскости X идет слева направо (соответствует долготе lon).
+    const localX = (dx * terrainSize) - halfSize;
+    
+    // Знак будет зависеть от того, что Север в Three.js - это обычно -Z.
+    // Поэтому если lat=maxLat (dz=1, Север), нам нужно получить -halfSize.
+    // Если lat=minLat (dz=0, Юг), нужно получить +halfSize.
+    const localZ = halfSize - (dz * terrainSize);
+
+    return { x: localX, z: localZ };
+}
+</file>
+
+<file path="frontend/tailwind.config.js">
+/** @type {import('tailwindcss').Config} */
+export default {
+  content: [
+    "./index.html",
+    "./src/**/*.{js,ts,jsx,tsx}",
+  ],
+  theme: {
+    extend: {},
+  },
+  plugins: [],
+}
+</file>
+
+<file path="frontend/vite.config.js">
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+
+export default defineConfig({
+  plugins: [react()],
+})
+</file>
+
+<file path="tests/test_aws.py">
+import httpx
+import asyncio
+import json
+
+async def run_test():
+    url = "http://127.0.0.1:8000/api/v1/simulation/process"
+    
+    print(f"Отправка запроса на {url}...")
+    
+    # Открываем наш обновленный тестовый JSON файл
+    with open("weather_test.json", "rb") as f:
+        files = {"file": ("weather_test.json", f, "application/json")}
+        
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            try:
+                response = await client.post(url, files=files)
+                print(f"Статус ответa: {response.status_code}")
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    
+                    # Проверяем успешность данных рельефа
+                    terrain = data.get("terrain", {})
+                    weather = data.get("weather", {})
+                    
+                    print("\n--- ДАННЫЕ О РЕЛЬЕФЕ (AWS S3) ---")
+                    print(f"Размер тайла: {terrain.get('size')}x{terrain.get('size')}")
+                    print(f"Истинная минимальная высота: {terrain.get('min_height_meters'):.2f} метров")
+                    print(f"Истинная максимальная высота: {terrain.get('max_height_meters'):.2f} метров")
+                    print(f"Количество точек в матрице: {len(terrain.get('matrix', []))}")
+                    print(f"Первые 5 нормализованных значений: {terrain.get('matrix', [])[:5]}")
+                    
+                    print("\n--- МЕТЕОДАННЫЕ ---")
+                    print(f"Центр проекции: {weather.get('metadata', {}).get('center_lat')}, {weather.get('metadata', {}).get('center_lon')}")
+                    print(f"Количество землетрясений: {len(weather.get('earthquakes', []))}")
+                else:
+                    print(f"Ошибка: {response.text}")
+                    
+            except Exception as e:
+                print(f"Произошла ошибка при подключении (возможно сервер выключен): {e}")
+
+if __name__ == "__main__":
+    asyncio.run(run_test())
+</file>
+
+<file path="tests/weather_idw_stress_test.json">
+{
+  "_comment": "IDW STRESS TEST — 5 станций с максимально контрастными направлениями и скоростями. Цель: визуально проверить корректность IDW-интерполяции: каждая зона карты должна окрашиваться в цвет доминантной станции, а на границах — плавный переход. Центр: Владивосток (43.11°N, 131.88°E), zoom 11 (~14×14 км).",
+  "metadata": {
+    "center_lat": 43.1155,
+    "center_lon": 131.8855,
+    "zoom": 11
+  },
+  "wind_stations": [
+    {
+      "name": "Север: Арктический поток",
+      "lat": 43.18,
+      "lon": 131.89,
+      "azimuth_deg": 0,
+      "speed_ms": 20,
+      "color": "#00bfff"
+    },
+    {
+      "name": "Восток: Морской бриз (Японское море)",
+      "lat": 43.11,
+      "lon": 131.97,
+      "azimuth_deg": 90,
+      "speed_ms": 12,
+      "color": "#ff6b6b"
+    },
+    {
+      "name": "Юг: Тёплый фронт",
+      "lat": 43.05,
+      "lon": 131.89,
+      "azimuth_deg": 180,
+      "speed_ms": 8,
+      "color": "#51cf66"
+    },
+    {
+      "name": "Запад: Континентальный антициклон",
+      "lat": 43.11,
+      "lon": 131.80,
+      "azimuth_deg": 270,
+      "speed_ms": 15,
+      "color": "#ffd43b"
+    },
+    {
+      "name": "Центр: Локальная конвекция (Горы)",
+      "lat": 43.13,
+      "lon": 131.88,
+      "azimuth_deg": 315,
+      "speed_ms": 5,
+      "color": "#cc5de8"
+    }
+  ],
+  "fog": {
+    "density_percent": 35,
+    "layer_thickness_km": 1.5
+  },
+  "earthquakes": [
+    {
+      "lat": 43.11,
+      "lon": 131.88,
+      "magnitude": 3.5,
+      "depth_km": 12
+    },
+    {
+      "lat": 43.08,
+      "lon": 131.92,
+      "magnitude": 5.1,
+      "depth_km": 20
+    }
+  ]
+}
+</file>
+
+<file path="tests/weather_moscow.json">
+{
+  "metadata": {
+    "center_lat": 55.7558,
+    "center_lon": 37.6173,
+    "zoom": 11
+  },
+  "wind_stations": [
+    {
+      "name": "Северо-Западный фронт (Тушино)",
+      "lat": 55.8200,
+      "lon": 37.4500,
+      "azimuth_deg": 315,
+      "speed_ms": 12,
+      "color": "#a3e4d7"
+    },
+    {
+      "name": "Южный тепловой поток (Домодедово)",
+      "lat": 55.4000,
+      "lon": 37.9000,
+      "azimuth_deg": 180,
+      "speed_ms": 8,
+      "color": "#f9e79f"
+    },
+    {
+      "name": "Городская турбулентность (Сити)",
+      "lat": 55.7500,
+      "lon": 37.5300,
+      "azimuth_deg": 270,
+      "speed_ms": 4,
+      "color": "#d7bde2"
+    }
+  ],
+  "fog": {
+    "density_percent": 25,
+    "layer_thickness_km": 1.0
+  },
+  "earthquakes": [
+    {
+      "lat": 55.7520,
+      "lon": 37.6150,
+      "magnitude": 1.5,
+      "depth_km": 10
+    }
+  ]
+}
+</file>
+
+<file path="tests/weather_spb.json">
+{
+  "metadata": {
+    "center_lat": 59.9343,
+    "center_lon": 30.3351,
+    "zoom": 11
+  },
+  "wind_stations": [
+    {
+      "name": "Шторм Финского залива (Запад)",
+      "lat": 59.9500,
+      "lon": 30.1500,
+      "azimuth_deg": 260,
+      "speed_ms": 18,
+      "color": "#00bfff"
+    },
+    {
+      "name": "Континентальный бриз (Восток)",
+      "lat": 59.9000,
+      "lon": 30.5000,
+      "azimuth_deg": 90,
+      "speed_ms": 5,
+      "color": "#ff6b6b"
+    }
+  ],
+  "fog": {
+    "density_percent": 80,
+    "layer_thickness_km": 1.0
+  },
+  "earthquakes": [
+    {
+      "lat": 59.9800,
+      "lon": 30.1000,
+      "magnitude": 1.2,
+      "depth_km": 8
+    }
+  ]
+}
+</file>
+
+<file path="tests/weather_test_russky.json">
+{
+  "metadata": {
+    "center_lat": 43.05,
+    "center_lon": 131.89,
+    "zoom": 11
+  },
+  "wind_stations": [
+    {
+      "name": "Морской бриз (Уссурийский залив)",
+      "lat": 42.98,
+      "lon": 131.98,
+      "azimuth_deg": 135,
+      "speed_ms": 14,
+      "color": "#00bfff"
+    },
+    {
+      "name": "Материковый шторм (Север)",
+      "lat": 43.20,
+      "lon": 131.85,
+      "azimuth_deg": 350,
+      "speed_ms": 20,
+      "color": "#ffffff"
+    },
+    {
+      "name": "Амурский залив (Запад)",
+      "lat": 43.08,
+      "lon": 131.75,
+      "azimuth_deg": 270,
+      "speed_ms": 6,
+      "color": "#a855f7"
+    }
+  ],
+  "fog": {
+    "density_percent": 30,
+    "layer_thickness_km": 1.5
+  },
+  "earthquakes": [
+    {
+      "lat": 43.02,
+      "lon": 131.89,
+      "magnitude": 4.2,
+      "depth_km": 5
+    }
+  ]
+}
+</file>
+
+<file path="tests/weather_ussuriysk.json">
+{
+  "metadata": {
+    "center_lat": 43.7967,
+    "center_lon": 131.9870,
+    "zoom": 11
+  },
+  "earthquakes": [
+    {
+      "magnitude": 5.2,
+      "depth_km": 18.0,
+      "lat": 43.80,
+      "lon": 131.99
+    },
+    {
+      "magnitude": 3.8,
+      "depth_km": 25.0,
+      "lat": 43.76,
+      "lon": 131.97
+    }
+  ],
+  "fog": {
+    "density_percent": 45.0,
+    "layer_thickness_km": 2.0
+  },
+  "wind_stations": [
+    {
+      "lat": 43.85,
+      "lon": 131.97,
+      "azimuth_deg": 20,
+      "speed_ms": 8
+    },
+    {
+      "lat": 43.75,
+      "lon": 132.00,
+      "azimuth_deg": 270,
+      "speed_ms": 12
+    },
+    {
+      "lat": 43.80,
+      "lon": 131.92,
+      "azimuth_deg": 135,
+      "speed_ms": 5
+    }
+  ]
+}
+</file>
+
+<file path=".gitignore">
+# Р’РёСЂС‚СѓР°Р»СЊРЅРѕРµ РѕРєСЂСѓР¶РµРЅРёРµ Python
+.venv/
+venv/
+backend/venv/
+
+# Р—Р°РІРёСЃРёРјРѕСЃС‚Рё Node.js (СЃРєР°С‡РёРІР°СЋС‚СЃСЏ С‡РµСЂРµР· npm install)
+frontend/node_modules/
+
+# РљСЌС€ Python
+__pycache__/
+*.pyc
+
+# Р›РѕРєР°Р»СЊРЅР°СЏ Р±Р°Р·Р° РґР°РЅРЅС‹С… SQLite
+*.db
+
+# РЎРёСЃС‚РµРјРЅС‹Рµ С„Р°Р№Р»С‹
+.DS_Store
+Thumbs.db
+
+# Р›РѕРіРё
+*.log
+
+# IDE РЅР°СЃС‚СЂРѕР№РєРё (РѕРїС†РёРѕРЅР°Р»СЊРЅРѕ, РјРѕР¶РЅРѕ СѓР±СЂР°С‚СЊ РµСЃР»Рё С…РѕС‚РёС‚Рµ С…СЂР°РЅРёС‚СЊ)
+# .vscode/
+
+# Production-сборка Vite
+frontend/dist/
+</file>
+
+<file path="backend/requirements.txt">
+fastapi
+uvicorn
+opencv-python-headless
+numpy
+python-multipart
+sqlalchemy
+asyncpg
+pydantic
+aiosqlite
+aiohttp
+mercantile
+</file>
+
+<file path="backend/terrain_service.py">
+import mercantile
+import numpy as np
+import cv2
+import base64
+from fastapi import HTTPException
+from typing import Dict, Any, Tuple
+
+class TerrainService:
+    @staticmethod
+    async def get_elevation_matrix(lat: float, lon: float, zoom: int) -> Dict[str, Any]:
+        """
+        Асинхронно скачивает тайл карты высот (Terrarium) с AWS S3, декодирует его и возвращает
+        массив высот в диапазоне от 0.0 до 1.0 (для совместимости с фронтендом), а также 
+        исходные высоты в метрах для аналитики.
+        """
+        # 1. Рассчитываем координаты тайла по мировым координатам (lat, lon) и заданному zoom
+        # Библиотека mercantile переводит географические координаты в формат "слиппи-карт" (XYZ)
+        tile = mercantile.tile(lon, lat, zoom)
+        x, y, z = tile.x, tile.y, tile.z
+
+        # 2. Формируем URL для скачивания тайла высот формата Terrarium
+        # Это открытые данные Mapzen (теперь хостятся на AWS), которые отдают рельеф закодированный в RGB.
+        url = f"https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png"
+
+        # 3. Скачиваем изображение (используем встроенный urllib, он надежнее обходит баг ConnectTimeout в async httpx на Windows)
+        import urllib.request
+        import urllib.error
+        
+        try:
+            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
+            with urllib.request.urlopen(req, timeout=15.0) as response:
+                image_bytes = response.read()
+        except urllib.error.URLError as e:
+            raise HTTPException(status_code=502, detail=f"Ошибка сети при обращении к AWS S3: {str(e.reason)} (URL: {url})")
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"Неизвестная ошибка: {repr(e)} (URL: {url})")
+        nparr = np.frombuffer(image_bytes, np.uint8)
+        img_bgr = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+        if img_bgr is None:
+            raise HTTPException(status_code=500, detail="Ошибка декодирования PNG тайла")
+
+        # Кодируем обратно в Base64 для передачи на UI
+        image_b64 = base64.b64encode(image_bytes).decode('utf-8')
+
+        # 5. Математика декодирования:
+        # OpenCV считывает каналы в порядке B (0), G (1), R (2).
+        # Формула Terrarium для получения высоты в метрах: height = (R * 256.0 + G + B / 256.0) - 32768.0
+        # Записываем каналы в отдельные переменные, преобразуя в float32 для избежания переполнения
+        b = img_bgr[:, :, 0].astype(np.float32)
+        g = img_bgr[:, :, 1].astype(np.float32)
+        r = img_bgr[:, :, 2].astype(np.float32)
+
+        # Выполняем векторизованную операцию над всей матрицей
+        height_meters_matrix = (r * 256.0) + g + (b / 256.0) - 32768.0
+
+        # Получаем реальные минимумы и максимумы (в метрах) для передачи на клиент.
+        # Это поможет фронтенду или другим сервисам знать истинную высоту гор.
+        min_meters = float(height_meters_matrix.min())
+        max_meters = float(height_meters_matrix.max())
+
+        # 6. Нормализация (Min-Max)
+        # Требование: Фронтенд (Three.js) изначально разрабатывался под значения 0.0 - 1.0. 
+        # Если разница высот равна нулю (вдруг открыли тайл ровного океана), избегаем деления на 0.
+        height_range = max_meters - min_meters
+        if height_range > 0:
+            normalized_matrix = (height_meters_matrix - min_meters) / height_range
+        else:
+            normalized_matrix = np.zeros_like(height_meters_matrix)
+
+        # 7. Подготавливаем результирующий словарь
+        # Three.js ожидает одномерный массив (flatten) из значений от 0.0 до 1.0
+        heights_list = normalized_matrix.flatten().tolist()
+        
+        # Обычно тайлы отдаются в размере 256x256
+        tile_size = img_bgr.shape[0]
+
+        # Расчет покрытия тайла в километрах (по формулам Web Mercator)
+        import math
+        equator_length_km = 40075.016
+        equator_width = equator_length_km / (2 ** zoom)
+        tile_width_km = equator_width * math.cos(math.radians(lat))
+
+        # Реальные географические границы тайла (для проекции метеостанций)
+        bounds = mercantile.bounds(tile)
+
+        return {
+            "matrix": heights_list,
+            "size": tile_size,
+            "min_height_meters": min_meters,
+            "max_height_meters": max_meters,
+            "image_base64": image_b64,
+            "tile_width_km": round(tile_width_km, 2),
+            "tile_bounds": {
+                "minLat": round(bounds.south, 6),
+                "maxLat": round(bounds.north, 6),
+                "minLon": round(bounds.west, 6),
+                "maxLon": round(bounds.east, 6)
+            }
+        }
+</file>
+
+<file path="frontend/package.json">
+{
+  "name": "diplom-frontend",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@react-three/drei": "^9.105.6",
+    "@react-three/fiber": "^8.16.1",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "simplex-noise": "^4.0.3",
+    "three": "^0.163.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.2.1",
+    "autoprefixer": "^10.4.19",
+    "postcss": "^8.4.38",
+    "tailwindcss": "^3.4.3",
+    "vite": "^5.2.8"
+  }
+}
+</file>
+
+<file path="frontend/src/components/Sidebar.jsx">
+import React from 'react';
+
+// ============================================================
+// Вспомогательная функция: направление ветра → текстовая метка
+// ============================================================
+const azimuthToLabel = (deg) => {
+  const dirs = ['С', 'СВ', 'В', 'ЮВ', 'Ю', 'ЮЗ', 'З', 'СЗ'];
+  return dirs[Math.round(deg / 45) % 8];
+};
+
+// ============================================================
+// Вспомогательная функция: м/с → шкала Бофорта (название)
+// ============================================================
+const beaufortName = (ms) => {
+  if (ms < 0.3) return 'Штиль';
+  if (ms < 1.6) return 'Тихий';
+  if (ms < 3.4) return 'Лёгкий';
+  if (ms < 5.5) return 'Слабый';
+  if (ms < 8.0) return 'Умеренный';
+  if (ms < 10.8) return 'Свежий';
+  if (ms < 13.9) return 'Сильный';
+  if (ms < 17.2) return 'Крепкий';
+  if (ms < 20.8) return 'Очень крепкий';
+  if (ms < 24.5) return 'Шторм';
+  if (ms < 28.5) return 'Сильный шторм';
+  return 'Ураган';
+};
+
+// ============================================================
+// Компонент: Легенда высот рельефа
+// ============================================================
+const TerrainLegend = ({ terrainMeta }) => {
+  if (!terrainMeta) return null;
+
+  const { minMeters, maxMeters } = terrainMeta;
+  const hasWater = minMeters < 0;
+  const range = maxMeters - minMeters;
+
+  // Вычисляем позицию отметки "0 м" на полоске (0%=низ, 100%=верх)
+  const seaLevelPct = hasWater ? Math.round((0 - minMeters) / range * 100) : null;
+
+  return (
+    <div className="flex flex-col gap-2">
+      <h3 className="text-xs font-bold text-slate-300 uppercase tracking-widest border-b border-slate-700 pb-1">
+        Легенда высот
+      </h3>
+
+      <div className="flex gap-3 items-stretch">
+        {/* Градиентная полоска высот (снизу = низко, сверху = высоко) */}
+        <div className="relative w-5 flex-shrink-0 rounded overflow-hidden" style={{ minHeight: '110px' }}>
+          <div
+            className="absolute inset-0 rounded"
+            style={{
+              background: 'linear-gradient(to top, #0f3d6b, #1e779f, #219a38, #7db542, #8c6a3d, #f5f5fa)',
+            }}
+          />
+          {/* Отметка уровня моря */}
+          {seaLevelPct !== null && (
+            <div
+              className="absolute w-full border-t-2 border-white/70"
+              style={{ bottom: `${seaLevelPct}%` }}
+            />
+          )}
+        </div>
+
+        {/* Подписи */}
+        <div className="flex flex-col justify-between text-xs text-slate-300 py-0.5">
+          <span className="font-semibold text-white">▲ {maxMeters > 0 ? `+${Math.round(maxMeters)} м` : `${Math.round(maxMeters)} м`}</span>
+
+          {/* Вставляем метки зон */}
+          <span className="text-slate-400">Снег / скалы</span>
+          <span className="text-slate-400">Склоны</span>
+          <span className="text-slate-400">Низины</span>
+
+          {hasWater ? (
+            <span className="text-cyan-400 font-semibold">≈ 0 м (море)</span>
+          ) : (
+            <span className="text-slate-500">— (воды нет)</span>
+          )}
+
+          <span className="font-semibold text-blue-300">▼ {Math.round(minMeters)} м</span>
+        </div>
+      </div>
+
+      {/* Цветовые блоки — палитра */}
+      <div className="flex flex-col gap-1 text-xs mt-1">
+        {hasWater && (
+          <div className="flex items-center gap-2">
+            <span className="w-4 h-3 rounded-sm flex-shrink-0" style={{ background: '#1e779f' }} />
+            <span className="text-slate-400">Вода / мелководье</span>
+          </div>
+        )}
+        <div className="flex items-center gap-2">
+          <span className="w-4 h-3 rounded-sm flex-shrink-0" style={{ background: '#219a38' }} />
+          <span className="text-slate-400">Низины / луга</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="w-4 h-3 rounded-sm flex-shrink-0" style={{ background: '#8c6a3d' }} />
+          <span className="text-slate-400">Горные склоны</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="w-4 h-3 rounded-sm flex-shrink-0" style={{ background: '#f5f5fa' }} />
+          <span className="text-slate-400">Снежные пики</span>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ============================================================
+// Компонент: Карточка одной метеостанции
+// ============================================================
+const WindStationCard = ({ station }) => {
+  const { name, lat, lon, azimuth_deg, speed_ms, color } = station;
+
+  return (
+    <div
+      className="flex flex-col gap-1 p-2 rounded-lg border border-slate-700 bg-slate-900/60"
+      style={{ borderLeftColor: color, borderLeftWidth: '3px' }}
+    >
+      {/* Название + стрелка направления */}
+      <div className="flex items-center justify-between gap-1">
+        <span className="text-xs font-semibold text-slate-200 leading-tight">{name}</span>
+        {/* Стрелка вращается по азимуту. 0° = стрелка вверх = ветер с севера (дует на юг) */}
+        <span
+          className="text-base leading-none flex-shrink-0"
+          style={{ transform: `rotate(${azimuth_deg}deg)`, display: 'inline-block' }}
+          title={`Азимут: ${Math.round(azimuth_deg)}°`}
+        >
+          ↑
+        </span>
+      </div>
+
+      {/* Метрики */}
+      <div className="flex justify-between items-center text-xs text-slate-400">
+        <span>
+          <span className="text-white font-bold">{speed_ms.toFixed(1)}</span> м/с
+          &nbsp;·&nbsp;
+          <span className="text-slate-300">{beaufortName(speed_ms)}</span>
+        </span>
+        <span className="text-slate-500">{azimuthToLabel(azimuth_deg)}</span>
+      </div>
+
+      {/* Координаты */}
+      <div className="text-xs text-slate-600">
+        {lat.toFixed(3)}°N, {lon.toFixed(3)}°E
+      </div>
+    </div>
+  );
+};
+
+// ============================================================
+// Компонент: Блок сводки погоды (ветер + туман + землетрясения)
+// ============================================================
+const WeatherSummary = ({ liveWindStations, dataSourceMode, isLiveLoading, liveError, weatherData }) => {
+  return (
+    <div className="flex flex-col gap-2">
+      <h3 className="text-xs font-bold text-slate-300 uppercase tracking-widest border-b border-slate-700 pb-1">
+        Актуальный ветер
+      </h3>
+
+      {isLiveLoading && (
+        <div className="text-xs text-purple-400 animate-pulse">Загрузка данных Open-Meteo...</div>
+      )}
+
+      {liveError && !isLiveLoading && (
+        <div className="text-xs text-red-400 bg-red-900/30 rounded p-2">
+          Нет данных: {liveError}
+        </div>
+      )}
+
+      {!isLiveLoading && !liveError && liveWindStations && (
+        <div className="flex flex-col gap-1.5">
+          {liveWindStations.map((station, idx) => (
+            <WindStationCard key={idx} station={station} />
+          ))}
+          <p className="text-xs text-slate-600 mt-1">
+            {dataSourceMode === 'custom' 
+              ? 'Источник: Пользовательский JSON (Оффлайн симуляция)'
+              : 'Источник: Open-Meteo API · IDW-интерполяция'
+            }
+          </p>
+        </div>
+      )}
+
+      {/* Туман */}
+      {weatherData?.fog && (
+        <div className="flex items-center justify-between text-xs mt-1 p-2 rounded bg-slate-900/40 border border-slate-700">
+          <span className="text-slate-400">Туман</span>
+          <span className="text-white font-semibold">{Math.round(weatherData.fog.density ?? (weatherData.fog.density_percent / 100) ?? 0) * 100}%</span>
+        </div>
+      )}
+
+      {/* Землетрясения */}
+      {weatherData?.earthquakes?.length > 0 && (
+        <div className="flex flex-col gap-1 mt-1">
+          <span className="text-xs text-slate-500">
+            Землетрясений на карте: {weatherData.earthquakes.length}
+          </span>
+          {weatherData.earthquakes.map((eq, idx) => (
+            <div key={idx} className="text-xs text-slate-400 flex justify-between">
+              <span>Маг. <span className="text-red-400 font-bold">{eq.magnitude}</span></span>
+              <span>Глубина: {eq.depth_km} км</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
+// ============================================================
+// Основной компонент Sidebar
+// ============================================================
+const Sidebar = ({
+  onUpload, zScale, setZScale, wireframe, setWireframe,
+  loading, layers, setLayers, tileImage, tileCoverage,
+  terrainMeta, liveWindStations, dataSourceMode, isLiveLoading, liveError, weatherData,
+}) => {
+
+  const handleFileChange = (e) => {
+    const file = e.target.files[0];
+    if (file && onUpload) {
+      onUpload(file);
+    }
+  };
+
+  return (
+    <div
+      className="w-80 bg-slate-800 flex flex-col shadow-2xl z-10 overflow-y-auto"
+      style={{ maxHeight: '100vh' }}
+    >
+      {/* Шапка */}
+      <div className="p-4 border-b border-slate-700 flex-shrink-0">
+        <h1 className="text-lg font-bold text-blue-400">3D Метео ГИС</h1>
+        <p className="text-xs text-slate-500">Система визуализации рельефа и погоды</p>
+      </div>
+
+      <div className="flex flex-col gap-4 p-4 overflow-y-auto">
+
+        {/* Загрузка JSON */}
+        <div className="flex flex-col gap-2">
+          <label className="text-xs font-semibold text-purple-400 uppercase tracking-widest">
+            Метеоданные (JSON)
+          </label>
+          <input
+            type="file"
+            accept="application/json"
+            onChange={handleFileChange}
+            disabled={loading}
+            className="block w-full text-xs text-slate-400
+              file:mr-3 file:py-1.5 file:px-3
+              file:rounded file:border-0
+              file:text-xs file:font-semibold
+              file:bg-purple-600 file:text-white
+              hover:file:bg-purple-700 transition-colors cursor-pointer"
+          />
+          {loading && <span className="text-xs text-purple-400 animate-pulse">Обработка на сервере...</span>}
+        </div>
+
+        {/* Масштаб высоты */}
+        <div className="flex flex-col gap-1.5">
+          <label className="text-xs font-semibold text-slate-300 flex justify-between">
+            <span>Масштаб высоты (Z-Scale)</span>
+            <span className="text-blue-400 font-bold">{zScale}×</span>
+          </label>
+          <input
+            type="range" min="1" max="100" value={zScale}
+            onChange={(e) => setZScale(parseFloat(e.target.value))}
+            className="w-full accent-blue-500 cursor-pointer"
+          />
+        </div>
+
+        {/* Режим сетки */}
+        <div className="flex gap-2 items-center">
+          <input
+            type="checkbox" id="wireframe" checked={wireframe}
+            onChange={(e) => setWireframe(e.target.checked)}
+            className="w-4 h-4 accent-blue-500 rounded cursor-pointer"
+          />
+          <label htmlFor="wireframe" className="text-xs text-slate-300 cursor-pointer">
+            Режим сетки (Wireframe)
+          </label>
+        </div>
+
+        {/* Тематические слои */}
+        <div className="flex flex-col gap-2">
+          <h3 className="text-xs font-bold text-slate-300 uppercase tracking-widest border-b border-slate-700 pb-1">
+            Тематические слои
+          </h3>
+          {[
+            { key: 'terrain', label: '3D Рельеф', color: 'accent-blue-500' },
+            { key: 'fog', label: 'Туман (Fog)', color: 'accent-purple-500' },
+            { key: 'wind', label: 'Потоки ветра', color: 'accent-green-500' },
+            { key: 'earthquakes', label: 'Землетрясения', color: 'accent-red-500' },
+          ].map(({ key, label, color }) => (
+            <label key={key} className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={layers[key]}
+                onChange={(e) => setLayers({ ...layers, [key]: e.target.checked })}
+                className={`w-4 h-4 ${color}`}
+              />
+              {label}
+            </label>
+          ))}
+        </div>
+
+        {/* Легенда высот рельефа */}
+        <TerrainLegend terrainMeta={terrainMeta} />
+
+        {/* Сводка погоды (ветер + туман + землетрясения) */}
+        <WeatherSummary
+          liveWindStations={liveWindStations}
+          dataSourceMode={dataSourceMode}
+          isLiveLoading={isLiveLoading}
+          liveError={liveError}
+          weatherData={weatherData}
+        />
+
+        {/* Превью тайла из AWS */}
+        {tileImage && (
+          <div className="flex flex-col gap-2 opacity-80 hover:opacity-100 transition-opacity">
+            <label className="text-xs font-semibold text-slate-400 uppercase tracking-widest border-b border-slate-700 pb-1">
+              Тайл AWS (Raw)
+            </label>
+            <img
+              src={`data:image/png;base64,${tileImage}`}
+              alt="Terrain Tile"
+              className="w-full h-auto rounded border border-slate-700 shadow-md"
+            />
+            {tileCoverage && (
+              <p className="text-xs text-blue-400">
+                Охват: ~{tileCoverage} × {tileCoverage} км
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Футер */}
+      <div className="mt-auto p-3 border-t border-slate-700 flex-shrink-0">
+        <p className="text-xs text-slate-600 text-center">
+          Источник высот: AWS Terrain-RGB · Ветер: Open-Meteo
+        </p>
+      </div>
+    </div>
+  );
+};
+
+export default Sidebar;
+</file>
+
+<file path="frontend/src/components/Terrain.jsx">
+import React, { useRef, useEffect, useMemo } from 'react';
+import * as THREE from 'three';
+
+// ============================================================================
+// GLSL ШЕЙДЕРЫ: Тепловая карта высот с динамическим уровнем моря
+// ============================================================================
+
+/**
+ * ВЕРШИННЫЙ ШЕЙДЕР (Vertex Shader)
+ * 
+ * Передаёт нормализованную высоту вершины во фрагментный шейдер.
+ * uMinHeight / uMaxHeight — реальные границы высот в единицах Three.js.
+ */
+const vertexShader = `
+  uniform float uMinHeight;
+  uniform float uMaxHeight;
+
+  varying float vElevation;
+
+  void main() {
+    // position.z — высота вершины (заданная через heightData[i] * zScale)
+    // Нормализуем в [0, 1]: 0 = самая низкая точка, 1 = самый высокий пик
+    float range = uMaxHeight - uMinHeight;
+
+    if (range < 0.001) {
+      vElevation = 0.0;
+    } else {
+      vElevation = clamp((position.z - uMinHeight) / range, 0.0, 1.0);
+    }
+
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  }
+`;
+
+/**
+ * ФРАГМЕНТНЫЙ ШЕЙДЕР (Fragment Shader)
+ *
+ * Использует ДИНАМИЧЕСКИЙ уровень моря (uSeaLevel) вместо захардкоженных порогов.
+ *
+ * uSeaLevel — нормализованное значение [0, 1], при котором высота = 0 метров.
+ *   Вычисляется на стороне JavaScript: seaLevel = (0 - minMeters) / (maxMeters - minMeters).
+ *   Например, если minMeters = -50м (подводная глубина), maxMeters = 700м:
+ *     seaLevel = (0 - (-50)) / (700 - (-50)) = 50 / 750 ≈ 0.067
+ *   Если minMeters = 10м (нет воды на тайле):
+ *     seaLevel = (0 - 10) / (500 - 10) < 0 → clamp к 0 → водной зоны нет.
+ *
+ * ПАЛИТРА:
+ *   [0      — sea-0.01]   Глубокая вода (тёмно-синий → бирюзовый)
+ *   [sea-0.01 — sea+0.02] Мелководье / берег (бирюзовый → зелёный)
+ *   [sea+0.02 — 0.45]     Низины / луга (зелёный → светло-зелёный)
+ *   [0.45    — 0.75]      Склоны (светло-зелёный → коричневый)
+ *   [0.75    — 1.0]       Горные пики (коричневый → снежно-белый)
+ */
+const fragmentShader = `
+  uniform float uSeaLevel;    // Нормализованная высота уровня моря [0, 1]
+
+  varying float vElevation;
+
+  void main() {
+    // ================================================================
+    // ОПРЕДЕЛЕНИЕ ЦВЕТОВ ПАЛИТРЫ
+    // ================================================================
+
+    vec3 colorDeepWater    = vec3(0.06, 0.24, 0.47);   // Глубокая вода: тёмный синий
+    vec3 colorShallowWater = vec3(0.12, 0.47, 0.63);   // Мелководье: бирюзовый
+    vec3 colorLowland      = vec3(0.13, 0.55, 0.13);   // Низины: лесной зелёный
+    vec3 colorMeadow       = vec3(0.49, 0.70, 0.26);   // Луга: светло-зелёный
+    vec3 colorRock         = vec3(0.55, 0.41, 0.24);   // Склоны: коричневый
+    vec3 colorSnow         = vec3(0.96, 0.96, 0.98);   // Пики: снежно-белый
+
+    // ================================================================
+    // ВЫЧИСЛЕНИЕ ГРАНИЦ ЗОН ОТНОСИТЕЛЬНО УРОВНЯ МОРЯ
+    //
+    // Все пороги привязаны к uSeaLevel, а не захардкожены.
+    // Это гарантирует, что вода ВСЕГДА окрашена правильно,
+    // независимо от того, есть ли в тайле батиметрия (подводная глубина).
+    // ================================================================
+
+    float seaTop    = uSeaLevel + 0.02;  // Верхняя граница прибрежной зоны
+    float landLow   = seaTop;            // Начало зелёной зоны
+    float landMid   = 0.45;             // Переход к склонам
+    float landHigh  = 0.75;             // Начало снежной зоны
+
+    // Гарантируем, что зелёная/склоны/снег не перекроются из-за высокого уровня моря
+    landMid  = max(landMid,  seaTop + 0.05);
+    landHigh = max(landHigh, landMid + 0.05);
+
+    vec3 finalColor;
+
+    if (vElevation < uSeaLevel) {
+      // ЗОНА ВОДЫ: от минимальной глубины до уровня моря
+      // smoothstep плавно переходит от глубокой воды к мелководью
+      float t = smoothstep(0.0, uSeaLevel, vElevation);
+      finalColor = mix(colorDeepWater, colorShallowWater, t);
+    } else if (vElevation < seaTop) {
+      // ПРИБРЕЖНАЯ ЗОНА: узкая полоска перехода от воды к суше
+      float t = smoothstep(uSeaLevel, seaTop, vElevation);
+      finalColor = mix(colorShallowWater, colorLowland, t);
+    } else if (vElevation < landMid) {
+      // НИЗИНЫ → ЛУГА
+      float t = smoothstep(landLow, landMid, vElevation);
+      finalColor = mix(colorLowland, colorMeadow, t);
+    } else if (vElevation < landHigh) {
+      // ЛУГА → ГОРНАЯ ПОРОДА
+      float t = smoothstep(landMid, landHigh, vElevation);
+      finalColor = mix(colorMeadow, colorRock, t);
+    } else {
+      // ГОРНАЯ ПОРОДА → СНЕГ
+      float t = smoothstep(landHigh, 1.0, vElevation);
+      finalColor = mix(colorRock, colorSnow, t);
+    }
+
+    // ================================================================
+    // ЭКРАННОЕ ДИФФУЗНОЕ ОСВЕЩЕНИЕ (dFdx/dFdy)
+    // ================================================================
+    vec3 dx = dFdx(gl_FragCoord.xyz);
+    vec3 dy = dFdy(gl_FragCoord.xyz);
+    vec3 normal = normalize(cross(dx, dy));
+
+    vec3 lightDir = normalize(vec3(0.5, 1.0, 0.3));
+    float diffuse = max(dot(normal, lightDir), 0.0);
+    float lighting = 0.4 + 0.6 * diffuse;
+
+    gl_FragColor = vec4(finalColor * lighting, 1.0);
+  }
+`;
+
+
+// ============================================================================
+// КОМПОНЕНТ Terrain
+// ============================================================================
+
+const Terrain = ({ heightData, resolution, zScale, wireframe, terrainMeta }) => {
+  const meshRef = useRef();
+  const geometryRef = useRef();
+
+  const [width, height] = resolution;
+
+  // Вычисляем min/max высот в единицах Three.js и нормализованный уровень моря
+  const { minH, maxH, seaLevel } = useMemo(() => {
+    if (!heightData) return { minH: 0, maxH: 1, seaLevel: 0 };
+
+    let min = Infinity;
+    let max = -Infinity;
+    for (let i = 0; i < heightData.length; i++) {
+      const v = heightData[i];
+      if (v < min) min = v;
+      if (v > max) max = v;
+    }
+
+    // min/max в единицах Three.js (для передачи в vertex shader)
+    const minScaled = min * zScale;
+    const maxScaled = max * zScale;
+
+    // Вычисляем нормализованный уровень моря (0 метров):
+    // seaLevel = (0 - minMeters) / (maxMeters - minMeters)
+    // Если minMeters > 0 (весь тайл выше моря) → seaLevel < 0 → clamp к 0 → воды нет
+    // Если minMeters < 0 (есть подводная глубина) → seaLevel > 0 → вода видна
+    let sl = 0;
+    if (terrainMeta && terrainMeta.maxMeters > terrainMeta.minMeters) {
+      sl = (0 - terrainMeta.minMeters) / (terrainMeta.maxMeters - terrainMeta.minMeters);
+      sl = Math.max(0, Math.min(1, sl)); // clamp [0, 1]
+    }
+
+    return { minH: minScaled, maxH: maxScaled, seaLevel: sl };
+  }, [heightData, zScale, terrainMeta]);
+
+  // Создаём ShaderMaterial один раз
+  const shaderMaterial = useMemo(() => {
+    return new THREE.ShaderMaterial({
+      vertexShader,
+      fragmentShader,
+      uniforms: {
+        uMinHeight: { value: 0.0 },
+        uMaxHeight: { value: 1.0 },
+        uSeaLevel:  { value: 0.0 },
+      },
+      side: THREE.DoubleSide,
+      wireframe: false,
+    });
+  }, []);
+
+  // Обновляем униформы при изменении данных
+  useEffect(() => {
+    if (shaderMaterial) {
+      shaderMaterial.uniforms.uMinHeight.value = minH;
+      shaderMaterial.uniforms.uMaxHeight.value = maxH;
+      shaderMaterial.uniforms.uSeaLevel.value = seaLevel;
+      shaderMaterial.wireframe = wireframe;
+      shaderMaterial.needsUpdate = true;
+    }
+  }, [minH, maxH, seaLevel, wireframe, shaderMaterial]);
+
+  // Обновляем вершины геометрии
+  useEffect(() => {
+    if (!geometryRef.current || !heightData) return;
+
+    const positions = geometryRef.current.attributes.position.array;
+    for (let i = 0; i < heightData.length; i++) {
+      positions[i * 3 + 2] = heightData[i] * zScale;
+    }
+    geometryRef.current.attributes.position.needsUpdate = true;
+    geometryRef.current.computeVertexNormals();
+  }, [heightData, zScale]);
+
+  // Заглушка, если данные ещё не загружены
+  if (!heightData) {
+    return (
+      <mesh rotation={[-Math.PI / 2, 0, 0]}>
+        <planeGeometry args={[200, 200, 32, 32]} />
+        <meshStandardMaterial color="#3b82f6" wireframe={wireframe} />
+      </mesh>
+    );
+  }
+
+  return (
+    <mesh ref={meshRef} rotation={[-Math.PI / 2, 0, 0]} material={shaderMaterial}>
+      <planeGeometry
+        ref={geometryRef}
+        args={[200, 200, width - 1, height - 1]}
+      />
+    </mesh>
+  );
+};
+
+export default Terrain;
+</file>
+
+<file path="frontend/src/components/WindSystem.jsx">
+import React, { useRef, useMemo } from 'react';
+import { useFrame } from '@react-three/fiber';
+import * as THREE from 'three';
+import { createNoise3D } from 'simplex-noise';
+import { mapGeoToLocal } from '../utils/geo';
+
+// ============================================================================
+// КОНСТАНТЫ
+// ============================================================================
+
+const TERRAIN_SIZE = 200;
+const PARTICLE_COUNT = 6000;
+const HALF_SIZE = TERRAIN_SIZE / 2;
+const FLY_ALTITUDE = 1.5;
+const VISUAL_SPEED_MULTIPLIER = 3;
+const GRADIENT_INFLUENCE = 8.0;
+const TURBULENCE_AMPLITUDE = 4.0;
+const GRADIENT_STEP = 2.0;
+const STREAK_LENGTH = 8.0;
+const MAX_AGE = 150;
+
+// Палитра цветов для станций (до 8 станций)
+// Яркие, визуально различимые цвета
+const STATION_COLORS = [
+  new THREE.Color(0x00bfff),  // Голубой (DeepSkyBlue)
+  new THREE.Color(0xff6b6b),  // Коралловый
+  new THREE.Color(0x51cf66),  // Зелёный
+  new THREE.Color(0xffd43b),  // Жёлтый
+  new THREE.Color(0xcc5de8),  // Фиолетовый
+  new THREE.Color(0xff922b),  // Оранжевый
+  new THREE.Color(0x20c997),  // Бирюзовый
+  new THREE.Color(0xf06595),  // Розовый
+];
+
+
+// ============================================================================
+// ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+// ============================================================================
+
+function getTerrainHeight(x, z, terrainMatrix, matrixSize, zScale) {
+  if (!terrainMatrix || !matrixSize) return null;
+  const percentX = (x + HALF_SIZE) / TERRAIN_SIZE;
+  const percentZ = (z + HALF_SIZE) / TERRAIN_SIZE;
+  const col = Math.max(0, Math.min(matrixSize - 1, Math.floor(percentX * (matrixSize - 1))));
+  const row = Math.max(0, Math.min(matrixSize - 1, Math.floor(percentZ * (matrixSize - 1))));
+  return terrainMatrix[row * matrixSize + col] * zScale;
+}
+
+function getTerrainGradient(x, z, terrainMatrix, matrixSize, zScale) {
+  if (!terrainMatrix) return { gx: 0, gz: 0 };
+  const step = GRADIENT_STEP;
+  const hR = getTerrainHeight(x + step, z, terrainMatrix, matrixSize, zScale) ?? 0;
+  const hL = getTerrainHeight(x - step, z, terrainMatrix, matrixSize, zScale) ?? 0;
+  const hF = getTerrainHeight(x, z + step, terrainMatrix, matrixSize, zScale) ?? 0;
+  const hB = getTerrainHeight(x, z - step, terrainMatrix, matrixSize, zScale) ?? 0;
+  return { gx: -(hR - hL) / (2 * step), gz: -(hF - hB) / (2 * step) };
+}
+
+
+// ============================================================================
+// КОМПОНЕНТ WindSystem с IDW + покраска по станциям
+// ============================================================================
+
+const WindSystem = ({ windStations, windDataLegacy, terrainMatrix, terrainSize, zScale, visible, mapBounds }) => {
+  const linesRef = useRef();
+  const noise3D = useMemo(() => createNoise3D(), []);
+
+  // ==========================================================================
+  // ПОДГОТОВКА СТАНЦИЙ (вне useFrame)
+  // ==========================================================================
+  const localStations = useMemo(() => {
+    if (windStations && windStations.length > 0 && mapBounds) {
+      return windStations.map((st, idx) => {
+        const { x, z } = mapGeoToLocal(
+          st.lat, st.lon,
+          mapBounds.minLat, mapBounds.maxLat,
+          mapBounds.minLon, mapBounds.maxLon,
+          TERRAIN_SIZE
+        );
+        const azRad = (st.azimuth_deg * Math.PI) / 180;
+        const vx = Math.sin(azRad) * st.speed_ms * VISUAL_SPEED_MULTIPLIER;
+        const vz = Math.cos(azRad) * st.speed_ms * VISUAL_SPEED_MULTIPLIER;
+        // Используем цвет из данных станции, если он есть. Иначе из палитры.
+        const color = st.color ? new THREE.Color(st.color) : STATION_COLORS[idx % STATION_COLORS.length];
+        return { x, z, vx, vz, color };
+      });
+    }
+
+    if (windDataLegacy) {
+      const azRad = (windDataLegacy.azimuth_deg * Math.PI) / 180;
+      const vx = Math.sin(azRad) * windDataLegacy.speed_ms * VISUAL_SPEED_MULTIPLIER;
+      const vz = Math.cos(azRad) * windDataLegacy.speed_ms * VISUAL_SPEED_MULTIPLIER;
+      return [{ x: 0, z: 0, vx, vz, color: STATION_COLORS[0] }];
+    }
+
+    return null;
+  }, [windStations, windDataLegacy, mapBounds]);
+
+  // ==========================================================================
+  // ИНИЦИАЛИЗАЦИЯ БУФЕРОВ: позиции + цвета + возрасты
+  //
+  // Цвет каждой вершины (Голова и Хвост) задаётся через атрибут color
+  // в BufferGeometry. Three.js автоматически интерполирует цвета
+  // между вершинами линии, создавая плавный градиент.
+  // ==========================================================================
+  const { positions, colors, ages } = useMemo(() => {
+    const pos = new Float32Array(PARTICLE_COUNT * 2 * 3);  // x,y,z × 2 точки × N
+    const col = new Float32Array(PARTICLE_COUNT * 2 * 3);  // r,g,b × 2 точки × N
+    const ag = new Float32Array(PARTICLE_COUNT);
+
+    for (let i = 0; i < PARTICLE_COUNT; i++) {
+      const i6 = i * 6;
+      const hx = (Math.random() - 0.5) * TERRAIN_SIZE;
+      const hz = (Math.random() - 0.5) * TERRAIN_SIZE;
+      pos[i6] = hx;  pos[i6 + 1] = 0;  pos[i6 + 2] = hz;
+      pos[i6 + 3] = hx;  pos[i6 + 4] = 0;  pos[i6 + 5] = hz;
+
+      // Начальный белый цвет (будет перезаписан в useFrame)
+      col[i6] = 1;  col[i6 + 1] = 1;  col[i6 + 2] = 1;
+      col[i6 + 3] = 1;  col[i6 + 4] = 1;  col[i6 + 5] = 1;
+
+      ag[i] = Math.random() * MAX_AGE;
+    }
+
+    return { positions: pos, colors: col, ages: ag };
+  }, []);
+
+  // ==========================================================================
+  // ГЛАВНЫЙ ЦИКЛ АНИМАЦИИ
+  // ==========================================================================
+  useFrame((state, delta) => {
+    if (!linesRef.current || !localStations || !terrainMatrix) return;
+
+    const posArray = linesRef.current.geometry.attributes.position.array;
+    const colArray = linesRef.current.geometry.attributes.color.array;
+    const time = state.clock.getElapsedTime();
+    const stationCount = localStations.length;
+
+    for (let i = 0; i < PARTICLE_COUNT; i++) {
+      const i6 = i * 6;
+
+      // ================================================================
+      // ЖИЗНЕННЫЙ ЦИКЛ (Anti-Sink)
+      // ================================================================
+      ages[i] += 1;
+      if (ages[i] >= MAX_AGE) {
+        ages[i] = 0;
+        const newX = (Math.random() - 0.5) * TERRAIN_SIZE;
+        const newZ = (Math.random() - 0.5) * TERRAIN_SIZE;
+        const newY = (getTerrainHeight(newX, newZ, terrainMatrix, terrainSize, zScale) ?? 0) + FLY_ALTITUDE;
+        posArray[i6] = newX;  posArray[i6 + 1] = newY;  posArray[i6 + 2] = newZ;
+        posArray[i6 + 3] = newX;  posArray[i6 + 4] = newY;  posArray[i6 + 5] = newZ;
+        continue;
+      }
+
+      let px = posArray[i6];
+      let pz = posArray[i6 + 2];
+
+      // ================================================================
+      // IDW-ИНТЕРПОЛЯЦИЯ + определение доминантной станции для покраски
+      //
+      // Параллельно с вычислением взвешенного среднего (IDW)
+      // мы отслеживаем, какая станция имеет максимальный вес.
+      // Частица окрашивается в цвет этой доминантной станции.
+      // Это визуально показывает «зону влияния» каждой метеостанции.
+      // ================================================================
+      let sumVx = 0, sumVz = 0, sumWeights = 0;
+      let maxWeight = -1;
+      let dominantIdx = 0;
+
+      for (let s = 0; s < stationCount; s++) {
+        const st = localStations[s];
+        const dx = px - st.x;
+        const dz = pz - st.z;
+        let distSq = dx * dx + dz * dz;
+        distSq = Math.max(distSq, 0.0001);
+
+        const weight = 1.0 / distSq;
+        sumVx += st.vx * weight;
+        sumVz += st.vz * weight;
+        sumWeights += weight;
+
+        // Отслеживаем ближайшую (доминантную) станцию
+        if (weight > maxWeight) {
+          maxWeight = weight;
+          dominantIdx = s;
+        }
+      }
+
+      let vx = sumVx / sumWeights;
+      let vz = sumVz / sumWeights;
+
+      // ================================================================
+      // ПОКРАСКА: цвет доминантной станции → обе вершины линии
+      // ================================================================
+      const stColor = localStations[dominantIdx].color;
+      colArray[i6]     = stColor.r;
+      colArray[i6 + 1] = stColor.g;
+      colArray[i6 + 2] = stColor.b;
+      colArray[i6 + 3] = stColor.r;
+      colArray[i6 + 4] = stColor.g;
+      colArray[i6 + 5] = stColor.b;
+
+      // ================================================================
+      // Terrain Gradient + Simplex Noise (без изменений)
+      // ================================================================
+      const gradient = getTerrainGradient(px, pz, terrainMatrix, terrainSize, zScale);
+      vx += gradient.gx * GRADIENT_INFLUENCE;
+      vz += gradient.gz * GRADIENT_INFLUENCE;
+
+      const noiseX = noise3D(px * 0.02, pz * 0.02, time * 0.3);
+      const noiseZ = noise3D(px * 0.02 + 100.0, pz * 0.02 + 100.0, time * 0.3);
+      vx += noiseX * TURBULENCE_AMPLITUDE;
+      vz += noiseZ * TURBULENCE_AMPLITUDE;
+
+      // Смещение + зацикливание
+      px += vx * delta;
+      pz += vz * delta;
+      if (px > HALF_SIZE)  px -= TERRAIN_SIZE;
+      if (px < -HALF_SIZE) px += TERRAIN_SIZE;
+      if (pz > HALF_SIZE)  pz -= TERRAIN_SIZE;
+      if (pz < -HALF_SIZE) pz += TERRAIN_SIZE;
+
+      // Привязка к рельефу
+      const headY = (getTerrainHeight(px, pz, terrainMatrix, terrainSize, zScale) ?? 0) + FLY_ALTITUDE;
+      posArray[i6] = px;  posArray[i6 + 1] = headY;  posArray[i6 + 2] = pz;
+
+      const tailX = px - vx * delta * STREAK_LENGTH;
+      const tailZ = pz - vz * delta * STREAK_LENGTH;
+      const tailY = (getTerrainHeight(tailX, tailZ, terrainMatrix, terrainSize, zScale) ?? 0) + FLY_ALTITUDE;
+      posArray[i6 + 3] = tailX;  posArray[i6 + 4] = tailY;  posArray[i6 + 5] = tailZ;
+    }
+
+    posArray.needsUpdate = true;
+    linesRef.current.geometry.attributes.position.needsUpdate = true;
+    linesRef.current.geometry.attributes.color.needsUpdate = true;
+  });
+
+  if (!visible || !localStations) return null;
+
+  return (
+    <lineSegments ref={linesRef}>
+      <bufferGeometry>
+        <bufferAttribute
+          attach="attributes-position"
+          count={PARTICLE_COUNT * 2}
+          array={positions}
+          itemSize={3}
+        />
+        {/* Атрибут color: RGB для каждой вершины, окрашивает линии по станциям */}
+        <bufferAttribute
+          attach="attributes-color"
+          count={PARTICLE_COUNT * 2}
+          array={colors}
+          itemSize={3}
+        />
+      </bufferGeometry>
+      {/* vertexColors={true} включает покраску из атрибута color вместо единого цвета */}
+      <lineBasicMaterial
+        vertexColors={true}
+        transparent
+        opacity={0.8}
+        depthWrite={false}
+        fog={true}
+      />
+    </lineSegments>
+  );
+};
+
+export default WindSystem;
+</file>
+
+<file path="README.md">
+# Трёхмерные карты с визуализацией природных явлений
+
+Дипломный проект — клиент-серверное веб-приложение для генерации интерактивного 3D-рельефа из карт высот и наложения метеорологических данных (землетрясения, туман, ветер) с гео-проекцией координат.
+
+## Технологический стек
+
+| Компонент | Технологии |
+|-----------|-----------|
+| **Backend** | Python, FastAPI, SQLAlchemy, OpenCV, NumPy |
+| **Frontend** | React, Three.js (@react-three/fiber), Tailwind CSS |
+| **База данных** | SQLite (MVP) / PostgreSQL (production) |
+| **Сборщик** | Vite |
+
+## Структура проекта
+
+```
+Diplom/
+├── backend/
+│   ├── main.py            # API-эндпоинты FastAPI
+│   ├── database.py        # Подключение к БД (SQLAlchemy async)
+│   ├── models.py          # Модели таблиц (weather_logs, terrain_maps)
+│   ├── schemas.py         # Pydantic-схемы валидации
+│   └── requirements.txt   # Python-зависимости
+├── frontend/
+│   ├── src/
+│   │   ├── App.jsx              # Главный компонент приложения
+│   │   ├── components/
+│   │   │   ├── Terrain.jsx      # 3D-рельеф (PlaneGeometry + heightmap)
+│   │   │   ├── WeatherEffects.jsx # Визуализация погоды (ветер, туман, землетрясения)
+│   │   │   ├── Sidebar.jsx      # Панель управления и менеджер слоёв
+│   │   │   └── ReportModal.jsx  # Модальное окно отчёта
+│   │   └── utils/
+│   │       └── geo.js           # Математика гео-проекции (Lat/Lon → X/Z)
+│   ├── index.html
+│   └── package.json
+├── tests/
+│   └── weather_test.json  # Тестовые метеоданные
+└── .gitignore
+```
+
+## Быстрый старт
+
+### Требования
+
+- **Python** 3.10+
+- **Node.js** 18+
+- **npm** (устанавливается вместе с Node.js)
+
+### 1. Клонирование репозитория
+
+```bash
+git clone https://github.com/ВАШ_ЛОГИН/Diplom.git
+cd Diplom
+```
+
+### 2. Настройка Backend
+
+```bash
+# Создаём виртуальное окружение
+python -m venv .venv
+
+# Активируем его (Windows PowerShell)
+.\.venv\Scripts\activate
+
+# Устанавливаем зависимости
+pip install -r backend/requirements.txt
+```
+
+### 3. Настройка Frontend
+
+```bash
+cd frontend
+npm install
+cd ..
+```
+
+### 4. Запуск (нужны два терминала одновременно)
+
+**Терминал 1 — Backend (FastAPI):**
+```bash
+cd backend
+..\.venv\Scripts\activate
+uvicorn main:app --reload
+```
+Сервер запустится на `http://127.0.0.1:8000`
+
+**Терминал 2 — Frontend (React):**
+```bash
+cd frontend
+npm run dev
+```
+Приложение откроется на `http://localhost:5173`
+
+### 5. Использование
+
+1. Откройте `http://localhost:5173` в браузере
+2. Загрузите чёрно-белое изображение (карту высот) через кнопку **«Карта высот»**
+3. Загрузите JSON-файл с метеоданными через кнопку **«Метеоданные»** (пример в `tests/weather_test.json`)
+4. Управляйте видимостью слоёв (рельеф, туман, ветер, землетрясения) через чекбоксы
+5. Вращайте 3D-сцену мышкой, масштабируйте колёсиком
+
+## API-документация
+
+После запуска бэкенда доступна автогенерируемая документация:
+- **Swagger UI:** `http://127.0.0.1:8000/docs`
+- **ReDoc:** `http://127.0.0.1:8000/redoc`
+
+### Эндпоинты
+
+| Метод | URL | Описание |
+|-------|-----|----------|
+| `POST` | `/api/v1/terrain/process-heightmap` | Загрузка и обработка карты высот (OpenCV) |
+| `GET`  | `/api/v1/terrain/maps` | Список загруженных карт (CM_003) |
+| `POST` | `/api/v1/weather/upload` | Загрузка и валидация JSON метеоданных |
+| `GET`  | `/api/v1/weather/report/{id}` | Сводный отчёт по загрузке (MET_004) |
+
+## Формат метеоданных (JSON)
+
+```json
+{
+  "earthquakes": [
+    { "magnitude": 5.5, "depth_km": 12.0, "lat": 40.2, "lon": 30.3 }
+  ],
+  "fog": {
+    "density_percent": 85.0,
+    "layer_thickness_km": 3.5
+  },
+  "wind": {
+    "speed_ms": 15.0,
+    "azimuth_deg": 135.0
+  }
+}
+```
+
+## Лицензия
+
+Учебный проект. Все права защищены.
+</file>
+
+<file path="tests/weather_test_vladivostok.json">
+{
+  "metadata": {
+    "center_lat": 43.1155,
+    "center_lon": 131.8855,
+    "zoom": 10
+  },
+  "earthquakes": [
+    {
+      "magnitude": 6.1,
+      "depth_km": 15.0,
+      "lat": 43.15,
+      "lon": 131.90
+    },
+    {
+      "magnitude": 4.5,
+      "depth_km": 8.0,
+      "lat": 43.08,
+      "lon": 131.85
+    }
+  ],
+  "fog": {
+    "density_percent": 90.0,
+    "layer_thickness_km": 2.5
+  },
+  "wind_stations": [
+    {
+      "lat": 43.11,
+      "lon": 131.85,
+      "azimuth_deg": 90,
+      "speed_ms": 15
+    },
+    {
+      "lat": 43.15,
+      "lon": 131.95,
+      "azimuth_deg": 180,
+      "speed_ms": 5
+    }
+  ]
+}
+</file>
+
+<file path="backend/main.py">
+import io
+import numpy as np
+import cv2
+from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+import json
+from pydantic import ValidationError
+from fastapi import Depends
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.future import select
+from database import engine, Base, get_db
+from models import MeteorologicalDataLog, TerrainMap
+from schemas import WeatherDataSchema, WeatherReportResponse, TerrainMapResponse, UploadWeatherResponse
+from typing import List, Optional
+from terrain_service import TerrainService
+from weather_service import get_live_wind_grid
+from pydantic import BaseModel as PydanticBaseModel
+
+app = FastAPI(title="Terrain Generator API (MVP)")
+
+# Схема ответа для /api/weather/live
+class LiveWindStationSchema(PydanticBaseModel):
+    name: str
+    lat: float
+    lon: float
+    azimuth_deg: float
+    speed_ms: float
+    color: str
+
+class LiveWeatherResponse(PydanticBaseModel):
+    wind_stations: List[LiveWindStationSchema]
+
+# Настройка CORS, чтобы React-фронтенд мог отправлять запросы на этот сервер
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"], # В реальном проекте здесь нужно указать конкретные домены (например, http://localhost:3000)
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+@app.on_event("startup")
+async def startup():
+    # Создаем таблицы в БД при старте приложения
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+@app.post("/api/v1/terrain/process-heightmap", deprecated=True)
+async def process_heightmap(file: UploadFile = File(...), db: AsyncSession = Depends(get_db)):
+    # Проверка, что загружен именно графический файл
+    if not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Invalid file type. Please upload an image.")
+
+    try:
+        # Считываем загруженный файл в память
+        contents = await file.read()
+        
+        # Конвертируем байты в numpy массив для OpenCV
+        nparr = np.frombuffer(contents, np.uint8)
+        
+        # Считываем изображение как черно-белое (Grayscale).
+        # Это важно: карта высот представляет собой один канал, где 0 (черный) - низшая точка, а 255 (белый) - высшая.
+        img = cv2.imdecode(nparr, cv2.IMREAD_GRAYSCALE)
+        
+        if img is None:
+            raise ValueError("Failed to decode image")
+
+        # Применяем гауссово размытие для устранения шумов и сглаживания рельефа.
+        # Размер ядра (5, 5) определяет степень размытия.
+        blurred_img = cv2.GaussianBlur(img, (5, 5), 0)
+
+        # Ресайз до фиксированного разрешения 256x256. 
+        # Это критически важно: если отдать 4K карту на фронтенд, WebGL не справится с миллионами полигонов.
+        # Разрешение 256x256 (65536 вершин) оптимально для быстрого рендеринга в браузере.
+        target_size = (256, 256)
+        resized_img = cv2.resize(blurred_img, target_size, interpolation=cv2.INTER_AREA)
+
+        # Нормализуем значения: переводим из диапазона 0-255 в диапазон 0.0 - 1.0.
+        # Это значительно упростит масштабирование (Z-Scale) на стороне клиента.
+        normalized_img = resized_img.astype(np.float32) / 255.0
+
+        # Преобразуем двумерную матрицу высот в одномерный массив (flatten).
+        # Three.js ожидает именно одномерный массив в качестве буфера для атрибута positions.
+        height_data = normalized_img.flatten().tolist()
+
+        # Запись метаданных рельефа в БД (Требование CM_003)
+        try:
+            new_map = TerrainMap(
+                filename=file.filename,
+                resolution_x=target_size[0],
+                resolution_y=target_size[1]
+            )
+            db.add(new_map)
+            await db.commit()
+        except Exception as db_err:
+            await db.rollback()
+            print(f"Error saving to DB: {db_err}")
+
+        return JSONResponse(content={
+            "resolution": target_size,
+            "heights": height_data
+        })
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error processing image: {str(e)}")
+
+@app.post("/api/v1/weather/upload", response_model=UploadWeatherResponse, deprecated=True)
+async def upload_weather_data(file: UploadFile = File(...), db: AsyncSession = Depends(get_db)):
+    if not file.filename.endswith(".json"):
+        raise HTTPException(status_code=400, detail="Только JSON файлы разрешены")
+    
+    content = await file.read()
+    try:
+        # Парсим JSON и сразу валидируем через Pydantic (по строгим правилам WeatherDataSchema)
+        data_dict = json.loads(content)
+        validated_data = WeatherDataSchema(**data_dict)
+    except ValidationError as e:
+        # Pydantic вернет подробную ошибку, если данные выходят за пределы (например, скорость ветра > 33 или туман > 100%)
+        # Статус 422 Unprocessable Entity - стандарт для ошибок валидации в REST
+        raise HTTPException(status_code=422, detail=f"Ошибка валидации схемы: {e.errors()}")
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Неверный формат JSON")
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=str(e))
+        
+    try:
+        # Требование MET_004: Извлекаем метрики перед сохранением (сколько явлений и охват)
+        eq_count = len(validated_data.earthquakes)
+        fog_count = 1 if validated_data.fog else 0
+        wind_count = 1 if validated_data.wind else 0
+        total_records = eq_count + fog_count + wind_count
+
+        min_lat, max_lat, min_lon, max_lon = None, None, None, None
+        if eq_count > 0:
+            lats = [eq.lat for eq in validated_data.earthquakes]
+            lons = [eq.lon for eq in validated_data.earthquakes]
+            min_lat, max_lat = min(lats), max(lats)
+            min_lon, max_lon = min(lons), max(lons)
+
+        # Запись лога загрузки в БД с рассчитанными метриками
+        new_log = MeteorologicalDataLog(
+            filename=file.filename,
+            status="Processed Successfully",
+            total_records=total_records,
+            earthquakes_count=eq_count,
+            fog_count=fog_count,
+            wind_count=wind_count,
+            min_lat=min_lat,
+            max_lat=max_lat,
+            min_lon=min_lon,
+            max_lon=max_lon
+        )
+        db.add(new_log)
+        await db.commit()
+        await db.refresh(new_log)
+        
+        file_id = new_log.id
+    except Exception as e:
+        await db.rollback()
+        file_id = -1
+        print(f"Database error: {e}")
+
+    # Возвращаем ID лога для получения отчета и провалидированные данные
+    return {"file_id": file_id, "data": validated_data}
+
+@app.get("/api/v1/weather/report/{file_id}", response_model=WeatherReportResponse)
+async def get_weather_report(file_id: int, db: AsyncSession = Depends(get_db)):
+    # Требование MET_004: Эндпоинт генерации отчета
+    result = await db.execute(select(MeteorologicalDataLog).where(MeteorologicalDataLog.id == file_id))
+    report = result.scalar_one_or_none()
+    
+    if not report:
+        raise HTTPException(status_code=404, detail="Отчет не найден")
+        
+    return report
+
+@app.get("/api/v1/terrain/maps", response_model=List[TerrainMapResponse])
+async def get_terrain_maps(db: AsyncSession = Depends(get_db)):
+    # Требование CM_003: Эндпоинт со списком созданных карт
+    result = await db.execute(select(TerrainMap).order_by(TerrainMap.upload_time.desc()))
+    maps = result.scalars().all()
+    return maps
+
+@app.post("/api/v1/simulation/process")
+async def process_simulation(file: UploadFile = File(...), db: AsyncSession = Depends(get_db)):
+    if not file.filename.endswith(".json"):
+        raise HTTPException(status_code=400, detail="Только JSON файлы разрешены")
+    
+    content = await file.read()
+    try:
+        data_dict = json.loads(content)
+        validated_data = WeatherDataSchema(**data_dict)
+    except ValidationError as e:
+        raise HTTPException(status_code=422, detail=f"Ошибка валидации схемы: {e.errors()}")
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Неверный формат JSON")
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    # Вызов TerrainService для получения карты высот
+    terrain_data = await TerrainService.get_elevation_matrix(
+        lat=validated_data.metadata.center_lat,
+        lon=validated_data.metadata.center_lon,
+        zoom=validated_data.metadata.zoom
+    )
+
+    try:
+        # Логируем загрузку в базу для отчетов (требование MET_004)
+        eq_count = len(validated_data.earthquakes)
+        fog_count = 1 if validated_data.fog else 0
+        wind_count = 1 if validated_data.wind else 0
+        total_records = eq_count + fog_count + wind_count
+
+        min_lat, max_lat, min_lon, max_lon = None, None, None, None
+        if eq_count > 0:
+            lats = [eq.lat for eq in validated_data.earthquakes]
+            lons = [eq.lon for eq in validated_data.earthquakes]
+            min_lat, max_lat = min(lats), max(lats)
+            min_lon, max_lon = min(lons), max(lons)
+
+        new_log = MeteorologicalDataLog(
+            filename=file.filename,
+            status="Processed Successfully (Simulation API)",
+            total_records=total_records,
+            earthquakes_count=eq_count,
+            fog_count=fog_count,
+            wind_count=wind_count,
+            min_lat=min_lat,
+            max_lat=max_lat,
+            min_lon=min_lon,
+            max_lon=max_lon
+        )
+        db.add(new_log)
+        await db.commit()
+    except Exception as e:
+        await db.rollback()
+        print(f"Database error: {e}")
+
+    # Формируем итоговый JSON-ответ
+    return {
+        "terrain": terrain_data,
+        "weather": validated_data.dict()
+    }
+
+
+@app.get("/api/weather/live", response_model=LiveWeatherResponse)
+async def get_live_weather(lat: float, lon: float):
+    """
+    Получение реальных данных ветра с Open-Meteo API.
+    Генерирует 4 виртуальные метеостанции (Bounding Box) вокруг заданной точки
+    и возвращает массив wind_stations, совместимый с фронтендом.
+    """
+    try:
+        stations = await get_live_wind_grid(lat, lon)
+        if not stations:
+            raise HTTPException(
+                status_code=502,
+                detail="Не удалось получить данные от Open-Meteo. Проверьте подключение к интернету."
+            )
+        return {"wind_stations": stations}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ошибка сервиса погоды: {str(e)}")
+</file>
+
+<file path="backend/schemas.py">
+from pydantic import BaseModel, Field
+from typing import Optional, List
+from datetime import datetime
+
+class EarthquakeSchema(BaseModel):
+    magnitude: float = Field(..., ge=1, le=10, description="Магнитуда землетрясения от 1 до 10")
+    depth_km: float = Field(..., ge=0, le=700, description="Глубина очага в км")
+    lat: float = Field(..., ge=-90, le=90, description="Географическая широта")
+    lon: float = Field(..., ge=-180, le=180, description="Географическая долгота")
+
+class FogSchema(BaseModel):
+    # Новый контракт (production-формат для шейдерного тумана)
+    density: Optional[float] = Field(None, ge=0.0, le=1.0, description="Плотность тумана от 0.0 до 1.0")
+    top_height_m: Optional[float] = Field(None, ge=0, le=5000, description="Высота верхней границы слоя тумана в метрах")
+    color: Optional[str] = Field(None, description="HEX-цвет тумана, например #e0e6ed")
+    # Legacy-поля (обратная совместимость со старыми JSON-файлами)
+    density_percent: Optional[float] = Field(None, ge=0, le=100, description="[Legacy] Плотность от 0% до 100%")
+    layer_thickness_km: Optional[float] = Field(None, ge=1, le=9, description="[Legacy] Толщина слоя в км")
+
+class WindSchema(BaseModel):
+    speed_ms: float = Field(..., ge=0, le=33, description="Скорость ветра м/с до ураганных значений")
+    azimuth_deg: float = Field(..., ge=0, le=360, description="Направление в градусах откуда дует ветер")
+
+class WindStationSchema(BaseModel):
+    name: Optional[str] = Field(None, description="Название метеостанции")
+    lat: float = Field(..., ge=-90, le=90, description="Широта метеостанции")
+    lon: float = Field(..., ge=-180, le=180, description="Долгота метеостанции")
+    azimuth_deg: float = Field(..., ge=0, le=360, description="Направление ветра в градусах")
+    speed_ms: float = Field(..., ge=0, le=33, description="Скорость ветра м/с")
+    color: Optional[str] = Field(None, description="HEX-цвет для визуализации на фронтенде")
+
+class MetadataSchema(BaseModel):
+    center_lat: float = Field(..., description="Широта центра симуляции")
+    center_lon: float = Field(..., description="Долгота центра симуляции")
+    zoom: int = Field(11, description="Зум карты (по умолчанию 11)")
+
+class WeatherDataSchema(BaseModel):
+    metadata: MetadataSchema = Field(..., description="Метаданные для привязки симуляции (координаты, зум)")
+    earthquakes: List[EarthquakeSchema] = []
+    fog: Optional[FogSchema] = None
+    wind: Optional[WindSchema] = None
+    wind_stations: Optional[List[WindStationSchema]] = None
+
+# Схема для ответа с отчетом (MET_004)
+class WeatherReportResponse(BaseModel):
+    id: int
+    filename: str
+    upload_time: datetime
+    total_records: int
+    earthquakes_count: int
+    fog_count: int
+    wind_count: int
+    min_lat: Optional[float]
+    max_lat: Optional[float]
+    min_lon: Optional[float]
+    max_lon: Optional[float]
+
+# Схема для ответа с картами (CM_003)
+class TerrainMapResponse(BaseModel):
+    id: int
+    filename: str
+    upload_time: datetime
+    resolution_x: int
+    resolution_y: int
+
+class UploadWeatherResponse(BaseModel):
+    file_id: int
+    data: WeatherDataSchema
+</file>
+
+<file path="frontend/src/components/WeatherEffects.jsx">
+import React, { useRef } from 'react';
+import { useFrame } from '@react-three/fiber';
+import * as THREE from 'three';
+import { mapGeoToLocal } from '../utils/geo';
+import WindSystem from './WindSystem';
+import FogLayer from './FogLayer';
+
+// Фоллбэк-границы (используются если бэкенд не вернул tile_bounds)
+const DEFAULT_BOUNDS = { minLat: 40, maxLat: 42, minLon: 30, maxLon: 32 };
+const TERRAIN_SIZE = 200;
+
+/**
+ * WeatherEffects — рендеринг атмосферных явлений поверх 3D-рельефа.
+ *
+ * После рефакторинга данные ветра (liveWindStations) приходят как пропс из App.jsx.
+ * Этот компонент отвечает ТОЛЬКО за рендеринг, не за получение данных.
+ */
+const WeatherEffects = ({
+  weatherData,
+  layers,
+  heightData,
+  resolution,
+  zScale,
+  tileBounds,
+  terrainMeta,
+  tileImage,
+  tileCoverage,
+  activeWindStations,
+  isLiveLoading,
+  liveError,
+}) => {
+
+  const mapBounds = tileBounds || DEFAULT_BOUNDS;
+
+  // Функция для получения Y-высоты рельефа по локальным координатам X, Z
+  const getTerrainHeight = (localX, localZ) => {
+    if (!heightData || !resolution) return 0;
+
+    const [width, height] = resolution;
+    const halfSize = TERRAIN_SIZE / 2;
+
+    const percentX = (localX + halfSize) / TERRAIN_SIZE;
+    const percentZ = (localZ + halfSize) / TERRAIN_SIZE;
+
+    let ix = Math.floor(percentX * (width - 1));
+    let iz = Math.floor(percentZ * (height - 1));
+
+    ix = Math.max(0, Math.min(width - 1, ix));
+    iz = Math.max(0, Math.min(height - 1, iz));
+
+    return heightData[iz * width + ix] * zScale;
+  };
+
+  return (
+    <>
+      {/* 1. ТУМАН — шейдерный низинный слой с Terrain-RGB пересечениями */}
+      {layers.fog && (
+        <FogLayer
+          fogData={weatherData?.fog}
+          zScale={zScale}
+          terrainMeta={terrainMeta}
+          tileImage={tileImage}
+          tileCoverage={tileCoverage}
+          mapBounds={mapBounds}
+        />
+      )}
+      {/* 2. ВЕТЕР */}
+      {!isLiveLoading && activeWindStations && !liveError && (
+        <WindSystem
+          windStations={activeWindStations}
+          terrainMatrix={heightData}
+          terrainSize={resolution?.[0] ?? 256}
+          zScale={zScale}
+          visible={layers.wind}
+          mapBounds={mapBounds}
+        />
+      )}
+
+      {/* 3. ЗЕМЛЕТРЯСЕНИЯ */}
+      {layers.earthquakes && weatherData?.earthquakes?.map((eq, idx) => {
+        const { x, z } = mapGeoToLocal(
+          eq.lat, eq.lon,
+          mapBounds.minLat, mapBounds.maxLat,
+          mapBounds.minLon, mapBounds.maxLon,
+          TERRAIN_SIZE
+        );
+        const heightY = getTerrainHeight(x, z);
+        return <EarthquakeMarker key={idx} data={eq} localX={x} localY={heightY} localZ={z} />;
+      })}
+    </>
+  );
+};
+
+// Внутренний компонент для анимации одного эпицентра землетрясения
+const EarthquakeMarker = ({ data, localX, localY, localZ }) => {
+  const ringsRef = useRef();
+  const baseScale = data.magnitude * 2;
+
+  useFrame((state) => {
+    if (ringsRef.current) {
+      const time = state.clock.getElapsedTime();
+      const pulse = (Math.sin(time * 3) + 1) / 2;
+      const scale = baseScale + pulse * data.magnitude;
+      ringsRef.current.scale.set(scale, scale, scale);
+      if (ringsRef.current.material) {
+        ringsRef.current.material.opacity = 1 - pulse;
+      }
+    }
+  });
+
+  return (
+    <group position={[localX, localY, localZ]}>
+      <mesh position={[0, 0, 0]}>
+        <sphereGeometry args={[1 + data.magnitude * 0.2, 16, 16]} />
+        <meshBasicMaterial color="#ef4444" fog={false} />
+      </mesh>
+      <mesh ref={ringsRef} rotation={[-Math.PI / 2, 0, 0]}>
+        <ringGeometry args={[0.8, 1, 32]} />
+        <meshBasicMaterial
+          color="#ef4444"
+          transparent
+          opacity={0.8}
+          depthTest={false}
+          side={THREE.DoubleSide}
+          fog={false}
+        />
+      </mesh>
+    </group>
+  );
+};
+
+export default WeatherEffects;
+</file>
+
+<file path="frontend/src/App.jsx">
+import React, { useState, useEffect, useCallback } from 'react';
+import { Canvas } from '@react-three/fiber';
+import { OrbitControls } from '@react-three/drei';
+import Sidebar from './components/Sidebar';
+import Terrain from './components/Terrain';
+import WeatherEffects from './components/WeatherEffects';
+import ReportModal from './components/ReportModal';
+
+// Координаты по умолчанию (Владивосток) — используются до загрузки файла
+const DEFAULT_LIVE_LAT = 43.05;
+const DEFAULT_LIVE_LON = 131.89;
+
+function App() {
+  const [heightData, setHeightData] = useState(null);
+  const [weatherData, setWeatherData] = useState(null);
+  const [currentFileId, setCurrentFileId] = useState(null);
+  const [showReportModal, setShowReportModal] = useState(false);
+  const [resolution, setResolution] = useState([256, 256]);
+  const [zScale, setZScale] = useState(10);
+  const [wireframe, setWireframe] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [tileImage, setTileImage] = useState(null);
+  const [tileCoverage, setTileCoverage] = useState(null);
+  const [terrainMeta, setTerrainMeta] = useState(null);
+  const [tileBounds, setTileBounds] = useState(null);
+
+  // ================================================================
+  // LIVE WEATHER — поднято из WeatherEffects, чтобы Sidebar мог
+  // отображать сводку по текущим метеостанциям
+  // ================================================================
+  const [liveWindStations, setLiveWindStations] = useState(null);
+  const [isLiveLoading, setIsLiveLoading] = useState(false);
+  const [liveError, setLiveError] = useState(null);
+
+  /**
+   * fetchLiveWeather — запрашивает реальный ветер для заданных координат.
+   * Оборачиваем в useCallback, чтобы ссылка не пересоздавалась при каждом рендере.
+   */
+  const fetchLiveWeather = useCallback(async (lat, lon) => {
+    setIsLiveLoading(true);
+    setLiveError(null);
+    try {
+      const response = await fetch(
+        `http://localhost:8000/api/weather/live?lat=${lat}&lon=${lon}`
+      );
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.detail || `HTTP ${response.status}`);
+      }
+      const data = await response.json();
+      setLiveWindStations(data.wind_stations);
+    } catch (err) {
+      console.error('[App] Ошибка live-данных:', err.message);
+      setLiveError(err.message);
+    } finally {
+      setIsLiveLoading(false);
+    }
+  }, []);
+
+  // Запрашиваем ветер при смене координат карты (или при первом рендере)
+  const centerLat = weatherData?.metadata?.center_lat ?? DEFAULT_LIVE_LAT;
+  const centerLon = weatherData?.metadata?.center_lon ?? DEFAULT_LIVE_LON;
+
+  const displayWindStations = weatherData?.wind_stations?.length > 0 ? weatherData.wind_stations : liveWindStations;
+  const dataSourceMode = weatherData?.wind_stations?.length > 0 ? 'custom' : 'live';
+
+  useEffect(() => {
+    if (weatherData?.wind_stations?.length > 0) {
+      setIsLiveLoading(false);
+      setLiveError(null);
+      return;
+    }
+    fetchLiveWeather(centerLat, centerLon);
+  }, [centerLat, centerLon, fetchLiveWeather, weatherData]);
+
+  // Стейт менеджера слоев
+  const [layers, setLayers] = useState({
+    terrain: true,
+    fog: true,
+    wind: true,
+    earthquakes: true
+  });
+
+  // Единая логика для отправки метеоданных и получения автоматической загрузки рельефа
+  const handleSimulationUpload = async (file) => {
+    setLoading(true);
+    setError(null);
+
+    const formData = new FormData();
+    formData.append("file", file);
+
+    try {
+      const response = await fetch("http://localhost:8000/api/v1/simulation/process", {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(JSON.stringify(errorData.detail) || 'Ошибка при загрузке данных симуляции');
+      }
+
+      const data = await response.json();
+
+      setHeightData(data.terrain.matrix);
+      setResolution([data.terrain.size, data.terrain.size]);
+      setTileImage(data.terrain.image_base64);
+      setTileCoverage(data.terrain.tile_width_km);
+      setTerrainMeta({
+        minMeters: data.terrain.min_height_meters,
+        maxMeters: data.terrain.max_height_meters,
+      });
+      setTileBounds(data.terrain.tile_bounds);
+      setWeatherData(data.weather);
+
+    } catch (err) {
+      console.error(err);
+      setError(`Ошибка симуляции: ${err.message}`);
+      alert(`Ошибка: ${err.message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="flex h-screen w-full bg-slate-900 text-white overflow-hidden">
+      {/* Боковая панель — теперь получает terrainMeta и liveWindStations для легенд */}
+      <Sidebar
+        onUpload={handleSimulationUpload}
+        zScale={zScale}
+        setZScale={setZScale}
+        wireframe={wireframe}
+        setWireframe={setWireframe}
+        loading={loading}
+        layers={layers}
+        setLayers={setLayers}
+        tileImage={tileImage}
+        tileCoverage={tileCoverage}
+        terrainMeta={terrainMeta}
+        liveWindStations={displayWindStations}
+        dataSourceMode={dataSourceMode}
+        isLiveLoading={isLiveLoading}
+        liveError={liveError}
+        weatherData={weatherData}
+      />
+
+      {/* Основной контейнер для 3D сцены */}
+      <div className="flex-1 relative">
+        <Canvas camera={{ position: [0, 150, 200], fov: 60 }}>
+          <ambientLight intensity={0.4} />
+          <directionalLight position={[100, 100, 50]} intensity={1.5} />
+          <directionalLight position={[-100, 50, -50]} intensity={0.5} />
+          <OrbitControls makeDefault />
+
+          {layers.terrain && (
+            <Terrain
+              heightData={heightData}
+              resolution={resolution}
+              zScale={zScale}
+              wireframe={wireframe}
+              terrainMeta={terrainMeta}
+            />
+          )}
+
+          {/* WeatherEffects теперь получает готовые данные ветра из App */}
+          <WeatherEffects
+            weatherData={weatherData}
+            layers={layers}
+            heightData={heightData}
+            resolution={resolution}
+            zScale={zScale}
+            tileBounds={tileBounds}
+            terrainMeta={terrainMeta}
+            tileImage={tileImage}
+            tileCoverage={tileCoverage}
+            activeWindStations={displayWindStations}
+            isLiveLoading={isLiveLoading}
+            liveError={liveError}
+          />
+        </Canvas>
+
+        {error && (
+          <div className="absolute top-4 left-1/2 transform -translate-x-1/2 bg-red-500/90 text-white px-6 py-3 rounded shadow-lg z-50 transition-all font-medium">
+            ⚠️ {error}
+          </div>
+        )}
+
+        {showReportModal && (
+          <ReportModal
+            fileId={currentFileId}
+            onClose={() => setShowReportModal(false)}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+export default App;
+</file>
+
+</files>
