@@ -25,3 +25,4 @@ Thumbs.db
 
 # Production-сборка Vite
 frontend/dist/
+repomix-output.xml
