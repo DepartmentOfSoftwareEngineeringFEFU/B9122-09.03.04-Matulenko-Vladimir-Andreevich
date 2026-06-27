@@ -1,0 +1,14 @@
+{
+  "metadata": {
+    "center_lat": 43.05,
+    "center_lon": 131.89,
+    "zoom": 11
+  },
+  "earthquakes": [],
+  "wind_stations": [
+    { "name": "Север (дует с Востока)", "lat": 43.15, "lon": 131.89, "azimuth_deg": 90,  "speed_ms": 15, "color": "#00bfff" },
+    { "name": "Запад (дует с Севера)",  "lat": 43.05, "lon": 131.75, "azimuth_deg": 0,   "speed_ms": 15, "color": "#51cf66" },
+    { "name": "Юг (дует с Запада)",     "lat": 42.95, "lon": 131.89, "azimuth_deg": 270, "speed_ms": 15, "color": "#ff6b6b" },
+    { "name": "Восток (дует с Юга)",    "lat": 43.05, "lon": 132.05, "azimuth_deg": 180, "speed_ms": 15, "color": "#ffd43b" }
+  ]
+}

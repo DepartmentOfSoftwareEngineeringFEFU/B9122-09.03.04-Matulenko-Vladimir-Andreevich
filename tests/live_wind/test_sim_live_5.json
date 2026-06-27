@@ -1,0 +1,21 @@
+{
+  "metadata": {
+    "center_lat": 43.04,
+    "center_lon": 131.84,
+    "zoom": 12
+  },
+  "earthquakes": [
+    {
+      "magnitude": 3.8,
+      "depth_km": 14,
+      "lat": 43.06,
+      "lon": 131.83
+    }
+  ],
+  "fog": {
+    "density": 0.9,
+    "top_height_m": 140,
+    "color": "#e0e6ed"
+  },
+  "wind_stations": []
+}

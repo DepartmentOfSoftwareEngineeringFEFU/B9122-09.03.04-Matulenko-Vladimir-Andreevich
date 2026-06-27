@@ -1,0 +1,13 @@
+{
+  "metadata": {
+    "center_lat": 35.3606,
+    "center_lon": 138.7274,
+    "zoom": 11
+  },
+  "earthquakes": [],
+  "wind_stations": [
+    { "name": "Поток 1", "lat": 35.4606, "lon": 138.6000, "azimuth_deg": 90, "speed_ms": 25, "color": "#ffffff" },
+    { "name": "Поток 2", "lat": 35.3606, "lon": 138.6000, "azimuth_deg": 90, "speed_ms": 25, "color": "#ffffff" },
+    { "name": "Поток 3", "lat": 35.2606, "lon": 138.6000, "azimuth_deg": 90, "speed_ms": 25, "color": "#ffffff" }
+  ]
+}

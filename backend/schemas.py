@@ -18,7 +18,7 @@ class FogSchema(BaseModel):
     layer_thickness_km: Optional[float] = Field(None, ge=1, le=9, description="[Legacy] Толщина слоя в км")
 
 class WindSchema(BaseModel):
-    speed_ms: float = Field(..., ge=0, le=33, description="Скорость ветра м/с до ураганных значений")
+    speed_ms: float = Field(..., ge=0, le=200, description="Скорость ветра м/с до ураганных значений")
     azimuth_deg: float = Field(..., ge=0, le=360, description="Направление в градусах откуда дует ветер")
 
 class WindStationSchema(BaseModel):
@@ -26,7 +26,7 @@ class WindStationSchema(BaseModel):
     lat: float = Field(..., ge=-90, le=90, description="Широта метеостанции")
     lon: float = Field(..., ge=-180, le=180, description="Долгота метеостанции")
     azimuth_deg: float = Field(..., ge=0, le=360, description="Направление ветра в градусах")
-    speed_ms: float = Field(..., ge=0, le=33, description="Скорость ветра м/с")
+    speed_ms: float = Field(..., ge=0, le=200, description="Скорость ветра м/с")
     color: Optional[str] = Field(None, description="HEX-цвет для визуализации на фронтенде")
 
 class MetadataSchema(BaseModel):

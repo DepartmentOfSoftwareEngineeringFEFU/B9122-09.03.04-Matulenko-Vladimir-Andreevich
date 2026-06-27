@@ -1,32 +1,31 @@
-from sqlalchemy import Column, Integer, String, DateTime, Float
-from datetime import datetime
+from sqlalchemy import Column, Integer, Float, String, Boolean
 from database import Base
 
-class MeteorologicalDataLog(Base):
-    __tablename__ = "weather_logs"
-
+class WindStation(Base):
+    __tablename__ = "wind_stations"
     id = Column(Integer, primary_key=True, index=True)
-    filename = Column(String, index=True)
-    upload_time = Column(DateTime, default=datetime.utcnow)
-    status = Column(String)
-    
-    # Поля для отчета по требованию MET_004
-    total_records = Column(Integer, default=0)
-    earthquakes_count = Column(Integer, default=0)
-    fog_count = Column(Integer, default=0)
-    wind_count = Column(Integer, default=0)
-    
-    # Пространственный охват
-    min_lat = Column(Float, nullable=True)
-    max_lat = Column(Float, nullable=True)
-    min_lon = Column(Float, nullable=True)
-    max_lon = Column(Float, nullable=True)
+    lat = Column(Float, index=True)
+    lon = Column(Float, index=True)
+    speed_ms = Column(Float)
+    azimuth_deg = Column(Float)
+    color = Column(String, nullable=True)
+    name = Column(String, nullable=True)
 
-class TerrainMap(Base):
-    __tablename__ = "terrain_maps"
-
+class Earthquake(Base):
+    __tablename__ = "earthquakes"
     id = Column(Integer, primary_key=True, index=True)
-    filename = Column(String, index=True)
-    upload_time = Column(DateTime, default=datetime.utcnow)
-    resolution_x = Column(Integer)
-    resolution_y = Column(Integer)
+    lat = Column(Float, index=True)
+    lon = Column(Float, index=True)
+    magnitude = Column(Float)
+    depth_km = Column(Float)
+
+class SimulationState(Base):
+    """Таблица для глобальных настроек (хранит ровно 1 строку)"""
+    __tablename__ = "simulation_state"
+    id = Column(Integer, primary_key=True, default=1)
+    center_lat = Column(Float)
+    center_lon = Column(Float)
+    zoom = Column(Integer)
+    fog_density = Column(Float, nullable=True)
+    fog_top_height_m = Column(Float, nullable=True)
+    fog_color = Column(String, nullable=True)

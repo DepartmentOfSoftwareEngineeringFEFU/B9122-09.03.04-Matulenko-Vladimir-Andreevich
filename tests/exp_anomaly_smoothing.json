@@ -1,0 +1,15 @@
+{
+  "metadata": {
+    "center_lat": 43.05,
+    "center_lon": 131.89,
+    "zoom": 11
+  },
+  "earthquakes": [],
+  "wind_stations": [
+    { "name": "Норма 1", "lat": 43.15, "lon": 131.80, "azimuth_deg": 90, "speed_ms": 10, "color": "#00bfff" },
+    { "name": "Норма 2", "lat": 43.15, "lon": 131.98, "azimuth_deg": 90, "speed_ms": 12, "color": "#00bfff" },
+    { "name": "Норма 3", "lat": 42.95, "lon": 131.80, "azimuth_deg": 90, "speed_ms": 9,  "color": "#00bfff" },
+    { "name": "Норма 4", "lat": 42.95, "lon": 131.98, "azimuth_deg": 90, "speed_ms": 11, "color": "#00bfff" },
+    { "name": "АНОМАЛИЯ", "lat": 43.05, "lon": 131.89, "azimuth_deg": 270, "speed_ms": 150, "color": "#ff0000" }
+  ]
+}

@@ -3,9 +3,8 @@ uvicorn
 opencv-python-headless
 numpy
 python-multipart
-sqlalchemy
-asyncpg
 pydantic
-aiosqlite
 aiohttp
 mercantile
+sqlalchemy
+aiosqlite

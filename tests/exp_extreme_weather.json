@@ -1,0 +1,22 @@
+{
+  "metadata": {
+    "center_lat": 43.05,
+    "center_lon": 131.89,
+    "zoom": 11
+  },
+  "earthquakes": [
+    { "magnitude": 9.5, "depth_km": 10, "lat": 43.10, "lon": 131.85 },
+    { "magnitude": 7.0, "depth_km": 20, "lat": 43.00, "lon": 131.95 },
+    { "magnitude": 5.5, "depth_km": 5,  "lat": 43.08, "lon": 131.90 }
+  ],
+  "fog": {
+    "density": 0.95,
+    "top_height_m": 800,
+    "color": "#ff3333"
+  },
+  "wind_stations": [
+    { "name": "Ураган Альфа", "lat": 43.15, "lon": 131.80, "azimuth_deg": 180, "speed_ms": 33, "color": "#ff0000" },
+    { "name": "Шторм Бета",   "lat": 42.95, "lon": 132.00, "azimuth_deg": 0,   "speed_ms": 30, "color": "#ff00ff" },
+    { "name": "Тишина",       "lat": 43.05, "lon": 131.89, "azimuth_deg": 90,  "speed_ms": 2,  "color": "#00ff00" }
+  ]
+}

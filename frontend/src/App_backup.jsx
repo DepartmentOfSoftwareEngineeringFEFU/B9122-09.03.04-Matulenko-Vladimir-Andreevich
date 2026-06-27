@@ -4,8 +4,8 @@ import { OrbitControls } from '@react-three/drei';
 import Sidebar from './components/Sidebar';
 import Terrain from './components/Terrain';
 import WeatherEffects from './components/WeatherEffects';
-import { mapLocalToGeo } from './utils/geo';
 
+// Координаты по умолчанию (Владивосток) — используются до загрузки файла
 const DEFAULT_LIVE_LAT = 43.05;
 const DEFAULT_LIVE_LON = 131.89;
 
@@ -22,15 +22,18 @@ function App() {
   const [terrainMeta, setTerrainMeta] = useState(null);
   const [tileBounds, setTileBounds] = useState(null);
 
-  // Stateful Storage
-  const [spatialData, setSpatialData] = useState({ earthquakes: [], wind_stations: [] });
-  const [hasCustomWind, setHasCustomWind] = useState(false);
-  const fetchTimeout = React.useRef(null);
-
+  // ================================================================
+  // LIVE WEATHER — поднято из WeatherEffects, чтобы Sidebar мог
+  // отображать сводку по текущим метеостанциям
+  // ================================================================
   const [liveWindStations, setLiveWindStations] = useState(null);
   const [isLiveLoading, setIsLiveLoading] = useState(false);
   const [liveError, setLiveError] = useState(null);
 
+  /**
+   * fetchLiveWeather — запрашивает реальный ветер для заданных координат.
+   * Оборачиваем в useCallback, чтобы ссылка не пересоздавалась при каждом рендере.
+   */
   const fetchLiveWeather = useCallback(async (lat, lon) => {
     setIsLiveLoading(true);
     setLiveError(null);
@@ -52,49 +55,13 @@ function App() {
     }
   }, []);
 
+  // Запрашиваем ветер при смене координат карты (или при первом рендере)
   const centerLat = weatherData?.metadata?.center_lat ?? DEFAULT_LIVE_LAT;
   const centerLon = weatherData?.metadata?.center_lon ?? DEFAULT_LIVE_LON;
 
-  const fetchSpatialData = useCallback((minLat, maxLat, minLon, maxLon) => {
-    if (fetchTimeout.current) clearTimeout(fetchTimeout.current);
-    fetchTimeout.current = setTimeout(async () => {
-      try {
-        const response = await fetch(`http://localhost:8000/api/v1/data/spatial?min_lat=${minLat}&max_lat=${maxLat}&min_lon=${minLon}&max_lon=${maxLon}`);
-        if (response.ok) {
-          const data = await response.json();
-          setSpatialData(data);
-        }
-      } catch (err) {
-        console.error('Error fetching spatial data:', err);
-      }
-    }, 500);
-  }, []);
-
-  const handleCameraChange = useCallback((e) => {
-    if (!tileBounds || !resolution) return;
-    const target = e.target.target;
-    const radius = 100;
-
-    const TERRAIN_SIZE = 200;
-    const minPoint = mapLocalToGeo(target.x - radius, target.z - radius, tileBounds.minLat, tileBounds.maxLat, tileBounds.minLon, tileBounds.maxLon, TERRAIN_SIZE);
-    const maxPoint = mapLocalToGeo(target.x + radius, target.z + radius, tileBounds.minLat, tileBounds.maxLat, tileBounds.minLon, tileBounds.maxLon, TERRAIN_SIZE);
-
-    const minLat = Math.min(minPoint.lat, maxPoint.lat);
-    const maxLat = Math.max(minPoint.lat, maxPoint.lat);
-    const minLon = Math.min(minPoint.lon, maxPoint.lon);
-    const maxLon = Math.max(minPoint.lon, maxPoint.lon);
-
-    fetchSpatialData(minLat, maxLat, minLon, maxLon);
-  }, [tileBounds, resolution, fetchSpatialData]);
-
-  const displayWindStations = hasCustomWind ? spatialData.wind_stations : liveWindStations;
+  const hasCustomWind = weatherData?.wind_stations?.length > 0 || weatherData?.wind;
+  const displayWindStations = hasCustomWind ? weatherData?.wind_stations : liveWindStations;
   const dataSourceMode = hasCustomWind ? 'custom' : 'live';
-
-  const augmentedWeatherData = weatherData ? {
-    ...weatherData,
-    earthquakes: spatialData.earthquakes,
-    wind_stations: spatialData.wind_stations
-  } : null;
 
   useEffect(() => {
     if (hasCustomWind) {
@@ -105,6 +72,7 @@ function App() {
     fetchLiveWeather(centerLat, centerLon);
   }, [centerLat, centerLon, fetchLiveWeather, hasCustomWind]);
 
+  // Стейт менеджера слоев
   const [layers, setLayers] = useState({
     terrain: true,
     fog: true,
@@ -112,6 +80,7 @@ function App() {
     earthquakes: true
   });
 
+  // Единая логика для отправки метеоданных и получения автоматической загрузки рельефа
   const handleSimulationUpload = async (file) => {
     setLoading(true);
     setError(null);
@@ -141,19 +110,7 @@ function App() {
         maxMeters: data.terrain.max_height_meters,
       });
       setTileBounds(data.terrain.tile_bounds);
-      
-      setWeatherData({
-        metadata: data.metadata,
-        fog: data.fog
-      });
-      setHasCustomWind(data.has_custom_wind);
-      
-      if (data.terrain.tile_bounds) {
-         fetchSpatialData(
-           data.terrain.tile_bounds.minLat, data.terrain.tile_bounds.maxLat,
-           data.terrain.tile_bounds.minLon, data.terrain.tile_bounds.maxLon
-         );
-      }
+      setWeatherData(data.weather);
 
     } catch (err) {
       console.error(err);
@@ -166,6 +123,7 @@ function App() {
 
   return (
     <div className="flex h-screen w-full bg-slate-900 text-white overflow-hidden">
+      {/* Боковая панель — теперь получает terrainMeta и liveWindStations для легенд */}
       <Sidebar
         onUpload={handleSimulationUpload}
         zScale={zScale}
@@ -182,15 +140,16 @@ function App() {
         dataSourceMode={dataSourceMode}
         isLiveLoading={isLiveLoading}
         liveError={liveError}
-        weatherData={augmentedWeatherData}
+        weatherData={weatherData}
       />
 
+      {/* Основной контейнер для 3D сцены */}
       <div className="flex-1 relative">
         <Canvas camera={{ position: [0, 150, 200], fov: 60 }}>
           <ambientLight intensity={0.4} />
           <directionalLight position={[100, 100, 50]} intensity={1.5} />
           <directionalLight position={[-100, 50, -50]} intensity={0.5} />
-          <OrbitControls makeDefault onChange={handleCameraChange} />
+          <OrbitControls makeDefault />
 
           {layers.terrain && (
             <Terrain
@@ -202,8 +161,9 @@ function App() {
             />
           )}
 
+          {/* WeatherEffects теперь получает готовые данные ветра из App */}
           <WeatherEffects
-            weatherData={augmentedWeatherData}
+            weatherData={weatherData}
             layers={layers}
             heightData={heightData}
             resolution={resolution}

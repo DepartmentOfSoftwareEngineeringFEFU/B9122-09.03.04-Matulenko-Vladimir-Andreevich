@@ -1,0 +1,31 @@
+{
+  "metadata": {
+    "center_lat": 43.01,
+    "center_lon": 131.81,
+    "zoom": 12
+  },
+  "earthquakes": [],
+  "fog": {
+    "density": 0.6,
+    "top_height_m": 110,
+    "color": "#e0e6ed"
+  },
+  "wind_stations": [
+    {
+      "name": "Станция A-1",
+      "lat": 43.06,
+      "lon": 131.81,
+      "azimuth_deg": 30,
+      "speed_ms": 6,
+      "color": "#ff0000"
+    },
+    {
+      "name": "Станция B-1",
+      "lat": 42.96,
+      "lon": 131.86,
+      "azimuth_deg": 225,
+      "speed_ms": 11,
+      "color": "#00ff00"
+    }
+  ]
+}

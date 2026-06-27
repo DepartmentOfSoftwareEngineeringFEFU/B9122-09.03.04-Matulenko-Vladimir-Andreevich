@@ -4,9 +4,6 @@ import * as THREE from 'three';
 import { createNoise3D } from 'simplex-noise';
 import { mapGeoToLocal } from '../utils/geo';
 
-// ============================================================================
-// КОНСТАНТЫ
-// ============================================================================
 
 const TERRAIN_SIZE = 200;
 const PARTICLE_COUNT = 6000;
@@ -20,7 +17,6 @@ const STREAK_LENGTH = 8.0;
 const MAX_AGE = 150;
 
 // Палитра цветов для станций (до 8 станций)
-// Яркие, визуально различимые цвета
 const STATION_COLORS = [
   new THREE.Color(0x00bfff),  // Голубой (DeepSkyBlue)
   new THREE.Color(0xff6b6b),  // Коралловый
@@ -33,9 +29,6 @@ const STATION_COLORS = [
 ];
 
 
-// ============================================================================
-// ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
-// ============================================================================
 
 function getTerrainHeight(x, z, terrainMatrix, matrixSize, zScale) {
   if (!terrainMatrix || !matrixSize) return null;
@@ -57,17 +50,12 @@ function getTerrainGradient(x, z, terrainMatrix, matrixSize, zScale) {
 }
 
 
-// ============================================================================
-// КОМПОНЕНТ WindSystem с IDW + покраска по станциям
-// ============================================================================
 
 const WindSystem = ({ windStations, windDataLegacy, terrainMatrix, terrainSize, zScale, visible, mapBounds }) => {
   const linesRef = useRef();
   const noise3D = useMemo(() => createNoise3D(), []);
 
-  // ==========================================================================
-  // ПОДГОТОВКА СТАНЦИЙ (вне useFrame)
-  // ==========================================================================
+
   const localStations = useMemo(() => {
     if (windStations && windStations.length > 0 && mapBounds) {
       return windStations.map((st, idx) => {
@@ -80,7 +68,6 @@ const WindSystem = ({ windStations, windDataLegacy, terrainMatrix, terrainSize, 
         const azRad = (st.azimuth_deg * Math.PI) / 180;
         const vx = Math.sin(azRad) * st.speed_ms * VISUAL_SPEED_MULTIPLIER;
         const vz = Math.cos(azRad) * st.speed_ms * VISUAL_SPEED_MULTIPLIER;
-        // Используем цвет из данных станции, если он есть. Иначе из палитры.
         const color = st.color ? new THREE.Color(st.color) : STATION_COLORS[idx % STATION_COLORS.length];
         return { x, z, vx, vz, color };
       });
@@ -96,13 +83,7 @@ const WindSystem = ({ windStations, windDataLegacy, terrainMatrix, terrainSize, 
     return null;
   }, [windStations, windDataLegacy, mapBounds]);
 
-  // ==========================================================================
-  // ИНИЦИАЛИЗАЦИЯ БУФЕРОВ: позиции + цвета + возрасты
-  //
-  // Цвет каждой вершины (Голова и Хвост) задаётся через атрибут color
-  // в BufferGeometry. Three.js автоматически интерполирует цвета
-  // между вершинами линии, создавая плавный градиент.
-  // ==========================================================================
+
   const { positions, colors, ages } = useMemo(() => {
     const pos = new Float32Array(PARTICLE_COUNT * 2 * 3);  // x,y,z × 2 точки × N
     const col = new Float32Array(PARTICLE_COUNT * 2 * 3);  // r,g,b × 2 точки × N
@@ -125,9 +106,7 @@ const WindSystem = ({ windStations, windDataLegacy, terrainMatrix, terrainSize, 
     return { positions: pos, colors: col, ages: ag };
   }, []);
 
-  // ==========================================================================
-  // ГЛАВНЫЙ ЦИКЛ АНИМАЦИИ
-  // ==========================================================================
+
   useFrame((state, delta) => {
     if (!linesRef.current || !localStations || !terrainMatrix) return;
 
@@ -139,9 +118,7 @@ const WindSystem = ({ windStations, windDataLegacy, terrainMatrix, terrainSize, 
     for (let i = 0; i < PARTICLE_COUNT; i++) {
       const i6 = i * 6;
 
-      // ================================================================
-      // ЖИЗНЕННЫЙ ЦИКЛ (Anti-Sink)
-      // ================================================================
+
       ages[i] += 1;
       if (ages[i] >= MAX_AGE) {
         ages[i] = 0;
@@ -156,14 +133,7 @@ const WindSystem = ({ windStations, windDataLegacy, terrainMatrix, terrainSize, 
       let px = posArray[i6];
       let pz = posArray[i6 + 2];
 
-      // ================================================================
-      // IDW-ИНТЕРПОЛЯЦИЯ + определение доминантной станции для покраски
-      //
-      // Параллельно с вычислением взвешенного среднего (IDW)
-      // мы отслеживаем, какая станция имеет максимальный вес.
-      // Частица окрашивается в цвет этой доминантной станции.
-      // Это визуально показывает «зону влияния» каждой метеостанции.
-      // ================================================================
+
       let sumVx = 0, sumVz = 0, sumWeights = 0;
       let maxWeight = -1;
       let dominantIdx = 0;
@@ -180,7 +150,6 @@ const WindSystem = ({ windStations, windDataLegacy, terrainMatrix, terrainSize, 
         sumVz += st.vz * weight;
         sumWeights += weight;
 
-        // Отслеживаем ближайшую (доминантную) станцию
         if (weight > maxWeight) {
           maxWeight = weight;
           dominantIdx = s;
@@ -190,9 +159,7 @@ const WindSystem = ({ windStations, windDataLegacy, terrainMatrix, terrainSize, 
       let vx = sumVx / sumWeights;
       let vz = sumVz / sumWeights;
 
-      // ================================================================
-      // ПОКРАСКА: цвет доминантной станции → обе вершины линии
-      // ================================================================
+
       const stColor = localStations[dominantIdx].color;
       colArray[i6]     = stColor.r;
       colArray[i6 + 1] = stColor.g;
@@ -201,9 +168,7 @@ const WindSystem = ({ windStations, windDataLegacy, terrainMatrix, terrainSize, 
       colArray[i6 + 4] = stColor.g;
       colArray[i6 + 5] = stColor.b;
 
-      // ================================================================
-      // Terrain Gradient + Simplex Noise (без изменений)
-      // ================================================================
+
       const gradient = getTerrainGradient(px, pz, terrainMatrix, terrainSize, zScale);
       vx += gradient.gx * GRADIENT_INFLUENCE;
       vz += gradient.gz * GRADIENT_INFLUENCE;
@@ -213,7 +178,6 @@ const WindSystem = ({ windStations, windDataLegacy, terrainMatrix, terrainSize, 
       vx += noiseX * TURBULENCE_AMPLITUDE;
       vz += noiseZ * TURBULENCE_AMPLITUDE;
 
-      // Смещение + зацикливание
       px += vx * delta;
       pz += vz * delta;
       if (px > HALF_SIZE)  px -= TERRAIN_SIZE;
@@ -221,7 +185,6 @@ const WindSystem = ({ windStations, windDataLegacy, terrainMatrix, terrainSize, 
       if (pz > HALF_SIZE)  pz -= TERRAIN_SIZE;
       if (pz < -HALF_SIZE) pz += TERRAIN_SIZE;
 
-      // Привязка к рельефу
       const headY = (getTerrainHeight(px, pz, terrainMatrix, terrainSize, zScale) ?? 0) + FLY_ALTITUDE;
       posArray[i6] = px;  posArray[i6 + 1] = headY;  posArray[i6 + 2] = pz;
 
@@ -247,7 +210,6 @@ const WindSystem = ({ windStations, windDataLegacy, terrainMatrix, terrainSize, 
           array={positions}
           itemSize={3}
         />
-        {/* Атрибут color: RGB для каждой вершины, окрашивает линии по станциям */}
         <bufferAttribute
           attach="attributes-color"
           count={PARTICLE_COUNT * 2}
@@ -255,7 +217,6 @@ const WindSystem = ({ windStations, windDataLegacy, terrainMatrix, terrainSize, 
           itemSize={3}
         />
       </bufferGeometry>
-      {/* vertexColors={true} включает покраску из атрибута color вместо единого цвета */}
       <lineBasicMaterial
         vertexColors={true}
         transparent

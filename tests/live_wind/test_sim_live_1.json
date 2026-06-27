@@ -1,0 +1,17 @@
+{
+  "metadata": {
+    "center_lat": 43.0,
+    "center_lon": 131.8,
+    "zoom": 11
+  },
+  "earthquakes": [
+    {
+      "magnitude": 3.0,
+      "depth_km": 10,
+      "lat": 43.02,
+      "lon": 131.79
+    }
+  ],
+  "fog": null,
+  "wind_stations": []
+}

@@ -216,7 +216,6 @@ const Sidebar = ({
   onUpload, zScale, setZScale, wireframe, setWireframe,
   loading, layers, setLayers, tileImage, tileCoverage,
   terrainMeta, liveWindStations, dataSourceMode, isLiveLoading, liveError, weatherData,
-  currentFileId, onShowReport,
 }) => {
 
   const handleFileChange = (e) => {
@@ -319,14 +318,6 @@ const Sidebar = ({
             liveError={liveError}
             weatherData={weatherData}
           />
-          {currentFileId !== null && dataSourceMode === 'custom' && (
-            <button
-              onClick={onShowReport}
-              className="w-full mt-2 bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold py-2 px-4 rounded transition-colors shadow-md"
-            >
-              Показать сводный отчет
-            </button>
-          )}
         </div>
 
         {/* Превью тайла из AWS */}

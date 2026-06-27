@@ -11,9 +11,6 @@ const TERRAIN_SIZE = 200;
 
 /**
  * WeatherEffects — рендеринг атмосферных явлений поверх 3D-рельефа.
- *
- * После рефакторинга данные ветра (liveWindStations) приходят как пропс из App.jsx.
- * Этот компонент отвечает ТОЛЬКО за рендеринг, не за получение данных.
  */
 const WeatherEffects = ({
   weatherData,
@@ -32,7 +29,6 @@ const WeatherEffects = ({
 
   const mapBounds = tileBounds || DEFAULT_BOUNDS;
 
-  // Функция для получения Y-высоты рельефа по локальным координатам X, Z
   const getTerrainHeight = (localX, localZ) => {
     if (!heightData || !resolution) return 0;
 
@@ -53,7 +49,6 @@ const WeatherEffects = ({
 
   return (
     <>
-      {/* 1. ТУМАН — шейдерный низинный слой с Terrain-RGB пересечениями */}
       {layers.fog && (
         <FogLayer
           fogData={weatherData?.fog}
@@ -64,10 +59,11 @@ const WeatherEffects = ({
           mapBounds={mapBounds}
         />
       )}
-      {/* 2. ВЕТЕР */}
-      {!isLiveLoading && activeWindStations && !liveError && (
+
+      {!isLiveLoading && (activeWindStations || weatherData?.wind) && (
         <WindSystem
           windStations={activeWindStations}
+          windDataLegacy={weatherData?.wind}
           terrainMatrix={heightData}
           terrainSize={resolution?.[0] ?? 256}
           zScale={zScale}
@@ -76,7 +72,6 @@ const WeatherEffects = ({
         />
       )}
 
-      {/* 3. ЗЕМЛЕТРЯСЕНИЯ */}
       {layers.earthquakes && weatherData?.earthquakes?.map((eq, idx) => {
         const { x, z } = mapGeoToLocal(
           eq.lat, eq.lon,
@@ -91,7 +86,6 @@ const WeatherEffects = ({
   );
 };
 
-// Внутренний компонент для анимации одного эпицентра землетрясения
 const EarthquakeMarker = ({ data, localX, localY, localZ }) => {
   const ringsRef = useRef();
   const baseScale = data.magnitude * 2;
